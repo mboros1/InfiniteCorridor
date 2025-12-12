@@ -5,23 +5,27 @@
 
 import { z } from 'zod';
 import type { RoomFlavorRequest, RoomFlavorResponse } from './contracts.js';
-import type { EnemyFlavor, TileKind } from '../domain/model.js';
+import type { EnemyFlavor, TileFlavor, TileKind } from '../domain/model.js';
 import { TILE_DATA } from '../domain/tiles.js';
 import type { Logger } from '../utils/logger.js';
 import { consoleLogger } from '../utils/logger.js';
+import { APP_ERROR_CODE, appError } from '../errors/appError.js';
+import { err, ok, tryCatch, type AppResult } from '../utils/appResult.js';
+
+const HEX_COLOR_REGEX = /^#([0-9A-F]{3}){1,2}$/i;
 
 // Zod schemas for validating AI responses
 const EnemyFlavorSchema = z.object({
-  name: z.string(),
-  shortDescription: z.string(),
+  name: z.string().min(1),
+  shortDescription: z.string().min(1),
   longDescription: z.string().optional(),
 });
 
 const TileFlavorSchema = z.object({
   name: z.string(),
-  char: z.string(),
-  fg: z.string(),
-  bg: z.string().optional(),
+  char: z.string().min(1),
+  fg: z.string().regex(HEX_COLOR_REGEX),
+  bg: z.string().regex(HEX_COLOR_REGEX).optional(),
   description: z.string().optional(),
 });
 
@@ -33,6 +37,80 @@ const RoomFlavorResponseSchema = z.object({
 
 // Export schemas for use in adapters
 export { RoomFlavorResponseSchema };
+
+function contentPreview(content: string, maxLen = 200): string {
+  const trimmed = content.trim();
+  if (trimmed.length <= maxLen) return trimmed;
+  return trimmed.slice(0, maxLen) + '...';
+}
+
+function cleanAiJsonText(content: string): string {
+  let cleaned = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+
+  if (!cleaned.endsWith('}')) {
+    const openBraces = (cleaned.match(/{/g) || []).length;
+    const closeBraces = (cleaned.match(/}/g) || []).length;
+    const missing = openBraces - closeBraces;
+    if (missing > 0) {
+      cleaned = cleaned.replace(/,?\s*"[^"]*$/, '');
+      cleaned = cleaned.replace(/,?\s*"[^"]*":\s*"[^"]*$/, '');
+      cleaned += '}'.repeat(missing);
+    }
+  }
+
+  return cleaned;
+}
+
+export function parseRoomFlavorResponseText(
+  content: string,
+  logger: Logger = consoleLogger
+): AppResult<RoomFlavorResponse> {
+  if (!content.trim()) {
+    return err(appError(APP_ERROR_CODE.AiResponseEmpty, 'AI response was empty'));
+  }
+
+  const cleaned = cleanAiJsonText(content);
+  const parsed = tryCatch(
+    () => JSON.parse(cleaned) as unknown,
+    (cause) =>
+      appError(APP_ERROR_CODE.AiResponseParseFailed, 'Failed to parse AI JSON response', {
+        cause,
+        context: {
+          contentPreview: contentPreview(content),
+        },
+      })
+  );
+  if (!parsed.ok) return parsed;
+
+  const normalized = normalizeAiResponse(parsed.value, logger);
+  const result = RoomFlavorResponseSchema.safeParse(normalized);
+  if (!result.success) {
+    return err(
+      appError(APP_ERROR_CODE.AiResponseInvalid, 'AI response failed schema validation', {
+        cause: result.error,
+        context: {
+          contentPreview: contentPreview(content),
+          validationErrors: result.error.format(),
+        },
+      })
+    );
+  }
+
+  const typedTileFlavors: Partial<Record<TileKind, TileFlavor>> = {};
+  for (const [key, value] of Object.entries(result.data.tileFlavors)) {
+    if (key in TILE_DATA) {
+      typedTileFlavors[key as TileKind] = value;
+    } else {
+      logger.warn('Unknown tile kind from AI; ignoring', { kind: key });
+    }
+  }
+
+  return ok({
+    roomDescription: result.data.roomDescription,
+    enemyFlavors: result.data.enemyFlavors,
+    tileFlavors: typedTileFlavors,
+  });
+}
 
 /**
  * Normalize AI response to handle common format issues:
@@ -69,14 +147,36 @@ export function normalizeAiResponse(parsed: unknown, logger: Logger = consoleLog
         const { kind, ...rest } = item as Record<string, unknown>;
         const kindStr = kind as string;
 
-        // Add default char and fg if missing
+        // Add default/validated char and colors if missing or invalid
         const tileData = TILE_DATA[kindStr as TileKind];
-        const normalized = {
-          char: tileData?.char ?? '?',
-          fg: tileData?.fg ?? '#888888',
-          ...rest,
+        const { char: charRaw, fg: fgRaw, bg: bgRaw, ...restWithoutColors } = rest as Record<string, unknown>;
+        const normalizedChar =
+          typeof charRaw === 'string' && charRaw.length > 0 ? charRaw : tileData?.char ?? '?';
+
+        const normalizedFg =
+          typeof fgRaw === 'string' && HEX_COLOR_REGEX.test(fgRaw) ? fgRaw : tileData?.fg ?? '#888888';
+        if (typeof fgRaw === 'string' && !HEX_COLOR_REGEX.test(fgRaw)) {
+          logger.warn('Invalid tile fg color from AI; using default', { kind: kindStr, fg: fgRaw });
+        }
+
+        let normalizedBg: string | undefined;
+        if (typeof bgRaw === 'string') {
+          if (HEX_COLOR_REGEX.test(bgRaw)) {
+            normalizedBg = bgRaw;
+          } else {
+            logger.warn('Invalid tile bg color from AI; dropping', { kind: kindStr, bg: bgRaw });
+          }
+        }
+
+        const normalized: Record<string, unknown> = {
+          ...restWithoutColors,
+          char: normalizedChar,
+          fg: normalizedFg,
+          ...(normalizedBg ? { bg: normalizedBg } : {}),
         };
         tileMap[kindStr] = normalized;
+      } else {
+        logger.warn('Invalid tile flavor item in array:', item);
       }
     }
     result.tileFlavors = tileMap;
@@ -86,10 +186,30 @@ export function normalizeAiResponse(parsed: unknown, logger: Logger = consoleLog
     for (const [kind, value] of Object.entries(obj.tileFlavors as Record<string, unknown>)) {
       if (typeof value === 'object' && value !== null) {
         const tileData = TILE_DATA[kind as TileKind];
-        const normalized = {
-          char: tileData?.char ?? '?',
-          fg: tileData?.fg ?? '#888888',
-          ...(value as Record<string, unknown>),
+        const { char: charRaw, fg: fgRaw, bg: bgRaw, ...restWithoutColors } = value as Record<string, unknown>;
+        const normalizedChar =
+          typeof charRaw === 'string' && charRaw.length > 0 ? charRaw : tileData?.char ?? '?';
+
+        const normalizedFg =
+          typeof fgRaw === 'string' && HEX_COLOR_REGEX.test(fgRaw) ? fgRaw : tileData?.fg ?? '#888888';
+        if (typeof fgRaw === 'string' && !HEX_COLOR_REGEX.test(fgRaw)) {
+          logger.warn('Invalid tile fg color from AI; using default', { kind, fg: fgRaw });
+        }
+
+        let normalizedBg: string | undefined;
+        if (typeof bgRaw === 'string') {
+          if (HEX_COLOR_REGEX.test(bgRaw)) {
+            normalizedBg = bgRaw;
+          } else {
+            logger.warn('Invalid tile bg color from AI; dropping', { kind, bg: bgRaw });
+          }
+        }
+
+        const normalized: Record<string, unknown> = {
+          ...restWithoutColors,
+          char: normalizedChar,
+          fg: normalizedFg,
+          ...(normalizedBg ? { bg: normalizedBg } : {}),
         };
         tileMap[kind] = normalized;
       }

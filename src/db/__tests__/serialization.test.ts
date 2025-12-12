@@ -13,19 +13,20 @@ import {
   serializeGameState,
   deserializeGameState
 } from '../serialization.js';
+import type { GameState, LevelState } from '../../domain/model.js';
 
 describe('Serialization Functions', () => {
   
   describe('Level Serialization', () => {
     
     test('should serialize and deserialize level correctly', () => {
-      const level = {
+      const level: LevelState = {
         id: 'test-level',
         depth: 1,
         width: 10,
         height: 10,
-        tiles: Array(100).fill('OpenGround'),
-        discovered: Array(100).fill(false),
+        tiles: Array.from({ length: 100 }, () => 'OpenGround'),
+        discovered: Array.from({ length: 100 }, () => false),
         entities: [
           {
             id: 'player-1',
@@ -47,17 +48,19 @@ describe('Serialization Functions', () => {
       const deserialized = deserializeLevel(serialized);
       expect(deserialized).toEqual(level);
       expect(deserialized.id).toBe('test-level');
-      expect(deserialized.entities[0].name).toBe('Test Player');
+      const firstEntity = deserialized.entities[0];
+      if (!firstEntity || firstEntity.kind !== 'Player') throw new Error('Expected a Player entity');
+      expect(firstEntity.name).toBe('Test Player');
     });
 
     test('should validate level before serialization', () => {
-      const invalidLevel = {
+      const invalidLevel: LevelState = {
         id: 'test-level',
         depth: 1,
         width: 10,
         height: 10,
-        tiles: Array(100).fill('InvalidTileType'), // Invalid tile type
-        discovered: Array(100).fill(false),
+        tiles: Array.from({ length: 100 }, () => 'InvalidTileType' as any), // Invalid tile type
+        discovered: Array.from({ length: 100 }, () => false),
         entities: []
       };
       
@@ -66,13 +69,13 @@ describe('Serialization Functions', () => {
     });
 
     test('should handle empty level', () => {
-      const level = {
+      const level: LevelState = {
         id: 'empty-level',
         depth: 1,
         width: 5,
         height: 5,
-        tiles: Array(25).fill('OpenGround'),
-        discovered: Array(25).fill(false),
+        tiles: Array.from({ length: 25 }, () => 'OpenGround'),
+        discovered: Array.from({ length: 25 }, () => false),
         entities: []
       };
       
@@ -106,7 +109,7 @@ describe('Serialization Functions', () => {
       
       const deserialized = deserializeTileFlavors(serialized);
       expect(deserialized).toEqual(tileFlavors);
-      expect(deserialized?.TallObstacle.name).toBe('Ancient Tree');
+      expect(deserialized?.TallObstacle?.name).toBe('Ancient Tree');
     });
 
     test('should handle empty tile flavors', () => {
@@ -192,7 +195,7 @@ describe('Serialization Functions', () => {
   describe('Game State Serialization', () => {
     
     test('should serialize and deserialize game state', () => {
-      const gameState = {
+      const gameState: GameState = {
         worldConfig: {
           themePrompt: 'A fantasy forest',
           seed: 'test-seed',
@@ -210,8 +213,8 @@ describe('Serialization Functions', () => {
           depth: 1,
           width: 10,
           height: 10,
-          tiles: Array(100).fill('OpenGround'),
-          discovered: Array(100).fill(false),
+          tiles: Array.from({ length: 100 }, () => 'OpenGround'),
+          discovered: Array.from({ length: 100 }, () => false),
           entities: []
         },
         playerId: 'player-1',
@@ -232,7 +235,7 @@ describe('Serialization Functions', () => {
     });
 
     test('should validate game state before serialization', () => {
-      const invalidGameState = {
+      const invalidGameState: GameState = {
         worldConfig: {
           themePrompt: '', // Empty theme prompt - should fail validation
           seed: 'test-seed',
@@ -250,8 +253,8 @@ describe('Serialization Functions', () => {
           depth: 1,
           width: 10,
           height: 10,
-          tiles: Array(100).fill('OpenGround'),
-          discovered: Array(100).fill(false),
+          tiles: Array.from({ length: 100 }, () => 'OpenGround'),
+          discovered: Array.from({ length: 100 }, () => false),
           entities: []
         },
         playerId: 'player-1',
@@ -266,7 +269,7 @@ describe('Serialization Functions', () => {
     });
 
     test('should handle complex game state with entities', () => {
-      const gameState = {
+      const gameState: GameState = {
         worldConfig: {
           themePrompt: 'Test World',
           seed: 'test-seed',
@@ -284,8 +287,8 @@ describe('Serialization Functions', () => {
           depth: 1,
           width: 10,
           height: 10,
-          tiles: Array(100).fill('OpenGround'),
-          discovered: Array(100).fill(false),
+          tiles: Array.from({ length: 100 }, () => 'OpenGround'),
+          discovered: Array.from({ length: 100 }, () => false),
           entities: [
             {
               id: 'player-1',
@@ -346,13 +349,13 @@ describe('Serialization Functions', () => {
   describe('Round-trip Serialization', () => {
     
     test('should handle round-trip serialization correctly', () => {
-      const originalLevel = {
+      const originalLevel: LevelState = {
         id: 'roundtrip-test',
         depth: 2,
         width: 5,
         height: 5,
-        tiles: Array(25).fill('OpenGround'),
-        discovered: Array(25).fill(false),
+        tiles: Array.from({ length: 25 }, () => 'OpenGround'),
+        discovered: Array.from({ length: 25 }, () => false),
         entities: [
           {
             id: 'player-1',
@@ -374,7 +377,9 @@ describe('Serialization Functions', () => {
       const finalDeserialized = deserializeLevel(reserialized);
       
       expect(finalDeserialized).toEqual(originalLevel);
-      expect(finalDeserialized.entities[0].name).toBe('Roundtrip Player');
+      const firstEntity = finalDeserialized.entities[0];
+      if (!firstEntity || firstEntity.kind !== 'Player') throw new Error('Expected a Player entity');
+      expect(firstEntity.name).toBe('Roundtrip Player');
     });
   });
 });

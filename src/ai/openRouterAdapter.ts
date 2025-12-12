@@ -1,8 +1,7 @@
 import { OpenRouter } from '@openrouter/sdk';
 import type { AIAdapter, RoomFlavorRequest, RoomFlavorResponse } from './contracts.js';
-import type { TileFlavor, TileKind } from '../domain/model.js';
 import { TILE_DESCRIPTIONS, TILE_DATA } from '../domain/tiles.js';
-import { normalizeAiResponse, createFallbackResponse, RoomFlavorResponseSchema } from './utils.js';
+import { createFallbackResponse, parseRoomFlavorResponseText } from './utils.js';
 import { consoleLogger, type Logger } from '../utils/logger.js';
 
 export interface OpenRouterConfig {
@@ -109,59 +108,17 @@ Respond with ONLY valid JSON, no markdown.`;
         ? rawContent
         : rawContent.map((part) => ('text' in part ? part.text : '')).join('');
 
-      // Parse and validate the response
-      let parsed: unknown;
-      try {
-        // Strip any markdown code blocks if present
-        let cleaned = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-
-        // Try to repair truncated JSON by adding missing closing braces
-        if (!cleaned.endsWith('}')) {
-          // Count opening vs closing braces
-          const openBraces = (cleaned.match(/{/g) || []).length;
-          const closeBraces = (cleaned.match(/}/g) || []).length;
-          const missing = openBraces - closeBraces;
-          if (missing > 0) {
-            // Remove any trailing incomplete string/value
-            cleaned = cleaned.replace(/,?\s*"[^"]*$/, '');
-            cleaned = cleaned.replace(/,?\s*"[^"]*":\s*"[^"]*$/, '');
-            cleaned += '}'.repeat(missing);
-          }
-        }
-
-        parsed = JSON.parse(cleaned);
-      } catch (e) {
-        logger.error('Failed to parse AI response:', {
-          error: e instanceof Error ? e.message : String(e),
-          contentPreview: content.slice(0, 100) + '...',
+      const parsedResponse = parseRoomFlavorResponseText(content, logger);
+      if (!parsedResponse.ok) {
+        logger.error('AI response parse/validation failed:', {
+          code: parsedResponse.error.code,
+          message: parsedResponse.error.message,
+          context: parsedResponse.error.context,
         });
         return createFallbackResponse(request);
       }
 
-      // Transform arrays to objects if the AI returned array format
-      const normalized = normalizeAiResponse(parsed, logger);
-
-      const result = RoomFlavorResponseSchema.safeParse(normalized);
-      if (!result.success) {
-        logger.error('AI response validation failed:', {
-          validationErrors: result.error.format(),
-        });
-        return createFallbackResponse(request);
-      }
-
-      // Convert tileFlavors keys to proper TileKind type
-      const typedTileFlavors: Partial<Record<TileKind, TileFlavor>> = {};
-      for (const [key, value] of Object.entries(result.data.tileFlavors)) {
-        if (key in TILE_DATA) {
-          typedTileFlavors[key as TileKind] = value;
-        }
-      }
-
-      return {
-        roomDescription: result.data.roomDescription,
-        enemyFlavors: result.data.enemyFlavors,
-        tileFlavors: typedTileFlavors,
-      };
+      return parsedResponse.value;
     },
   };
 }

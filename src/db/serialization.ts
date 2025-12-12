@@ -106,14 +106,14 @@ export function deserializeLevel(json: string): LevelState {
   return levelStateSchema.parse(JSON.parse(json));
 }
 
-export function serializeTileFlavors(tileFlavors?: Partial<Record<TileKind, TileFlavor>>): string | null {
+export function serializeTileFlavors(tileFlavors?: Partial<Record<TileKind, TileFlavor>> | null): string | null {
   if (!tileFlavors) return null;
   // Validate before serialization
   tileFlavorSchema.parse(tileFlavors);
   return JSON.stringify(tileFlavors);
 }
 
-export function serializeEnemyFlavors(enemyFlavors?: Record<string, EnemyFlavor>): string | null {
+export function serializeEnemyFlavors(enemyFlavors?: Record<string, EnemyFlavor> | null): string | null {
   if (!enemyFlavors) return null;
   // Validate before serialization
   enemyFlavorSchema.parse(enemyFlavors);
