@@ -4,6 +4,7 @@ import { getUniqueTileTypes } from '../engine/levelgen.js';
 import { createAnthropicAdapter, createMockAdapter } from '../ai/anthropicAdapter.js';
 import { createOpenRouterAdapter } from '../ai/openRouterAdapter.js';
 import type { AIAdapter, RoomFlavorRequest } from '../ai/contracts.js';
+import { consoleLogger } from '../utils/logger.js';
 import type { Action, GameState, WorldConfig, Monster } from '../domain/model.js';
 import { upsertEdges, upsertLevelState, upsertWorld, getWorldState } from '../db/worldRepo.js';
 import { serializeGameState } from '../db/serialization.js';
@@ -35,6 +36,7 @@ function createAiAdapter(): { adapter: AIAdapter; name: string } {
       adapter: createAnthropicAdapter({
         apiKey: process.env.ANTHROPIC_API_KEY,
         model: process.env.ANTHROPIC_MODEL,
+        logger: consoleLogger,
       }),
       name: 'Anthropic Claude',
     };
@@ -45,6 +47,7 @@ function createAiAdapter(): { adapter: AIAdapter; name: string } {
       adapter: createOpenRouterAdapter({
         apiKey: process.env.OPENROUTER_API_KEY,
         model: process.env.OPENROUTER_MODEL,
+        logger: consoleLogger,
       }),
       name: 'OpenRouter',
     };
