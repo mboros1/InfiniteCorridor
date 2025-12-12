@@ -132,7 +132,10 @@ Respond with ONLY valid JSON, no markdown.`;
 
         parsed = JSON.parse(cleaned);
       } catch (e) {
-        console.error('Failed to parse Claude response:', content, e);
+        logger.error('Failed to parse Claude response:', {
+          error: e instanceof Error ? e.message : String(e),
+          contentPreview: content.slice(0, 100) + '...',
+        });
         return createFallbackResponse(request);
       }
 
@@ -141,7 +144,9 @@ Respond with ONLY valid JSON, no markdown.`;
 
       const result = RoomFlavorResponseSchema.safeParse(normalized);
       if (!result.success) {
-        console.error('Claude response validation failed:', result.error.format());
+        logger.error('Claude response validation failed:', {
+          validationErrors: result.error.format(),
+        });
         return createFallbackResponse(request);
       }
 

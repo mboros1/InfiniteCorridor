@@ -131,8 +131,10 @@ Respond with ONLY valid JSON, no markdown.`;
 
         parsed = JSON.parse(cleaned);
       } catch (e) {
-        console.error('Failed to parse AI response:', content, e);
-        // Return a fallback response
+        logger.error('Failed to parse AI response:', {
+          error: e instanceof Error ? e.message : String(e),
+          contentPreview: content.slice(0, 100) + '...',
+        });
         return createFallbackResponse(request);
       }
 
@@ -141,7 +143,9 @@ Respond with ONLY valid JSON, no markdown.`;
 
       const result = RoomFlavorResponseSchema.safeParse(normalized);
       if (!result.success) {
-        console.error('AI response validation failed:', result.error.format());
+        logger.error('AI response validation failed:', {
+          validationErrors: result.error.format(),
+        });
         return createFallbackResponse(request);
       }
 
