@@ -14,6 +14,7 @@
 import type { Entity, EnemyTemplateId, LevelState, Monster, Position, LevelId, LevelCoord } from '../domain/model.js';
 import type { TileKind } from '../domain/tiles.js';
 import { CONFIG } from '../config/index.js';
+import { debugLog } from '../utils/debug.js';
 import type { RNG } from './rng.js';
 
 // ---- Level Generation Result ----
@@ -384,7 +385,7 @@ function placeTransitionTiles(
   clearings: Clearing[],
   rng: RNG
 ): Position[] {
-  console.log('[DEBUG] placeTransitionTiles: starting, clearings:', clearings.length);
+  debugLog('[DEBUG] placeTransitionTiles: starting, clearings:', clearings.length);
   const transitionPositions: Position[] = [];
 
   // Strategy: Place transitions in or near clearings that are closer to map edges
@@ -398,7 +399,7 @@ function placeTransitionTiles(
   ];
 
   for (const dir of directions) {
-    console.log(`[DEBUG] placeTransitionTiles: processing direction ${dir.name}`);
+    debugLog(`[DEBUG] placeTransitionTiles: processing direction ${dir.name}`);
     // Find the clearing closest to this edge
     let bestClearing: Clearing | null = null;
     let bestEdgeDist = Infinity;
@@ -419,10 +420,10 @@ function placeTransitionTiles(
     }
 
     if (!bestClearing) {
-      console.log(`[DEBUG] placeTransitionTiles: no clearing for ${dir.name}`);
+      debugLog(`[DEBUG] placeTransitionTiles: no clearing for ${dir.name}`);
       continue;
     }
-    console.log(`[DEBUG] placeTransitionTiles: best clearing for ${dir.name} at (${bestClearing.x},${bestClearing.y})`);
+    debugLog(`[DEBUG] placeTransitionTiles: best clearing for ${dir.name} at (${bestClearing.x},${bestClearing.y})`);
 
     // Place transition at edge of this clearing in the direction of the map edge
     // Find a walkable spot at the clearing's edge in this direction
@@ -450,19 +451,19 @@ function placeTransitionTiles(
       const y = Math.max(2, Math.min(height - 3, bestClearing.y + dir.dy * bestClearing.radius));
       transitionPos = { x, y };
     }
-    console.log(`[DEBUG] placeTransitionTiles: transition for ${dir.name} at (${transitionPos.x},${transitionPos.y})`);
+    debugLog(`[DEBUG] placeTransitionTiles: transition for ${dir.name} at (${transitionPos.x},${transitionPos.y})`);
 
     // Place the transition tile
     setTile(tiles, width, transitionPos.x, transitionPos.y, 'Transition');
     transitionPositions.push(transitionPos);
 
     // Carve a short path from clearing center to transition for visibility
-    console.log(`[DEBUG] placeTransitionTiles: carving path for ${dir.name}`);
+    debugLog(`[DEBUG] placeTransitionTiles: carving path for ${dir.name}`);
     carvePath(tiles, width, bestClearing.x, bestClearing.y, transitionPos.x, transitionPos.y, rng, 0.1);
-    console.log(`[DEBUG] placeTransitionTiles: path carved for ${dir.name}`);
+    debugLog(`[DEBUG] placeTransitionTiles: path carved for ${dir.name}`);
   }
 
-  console.log('[DEBUG] placeTransitionTiles: done, total:', transitionPositions.length);
+  debugLog('[DEBUG] placeTransitionTiles: done, total:', transitionPositions.length);
   return transitionPositions;
 }
 
@@ -479,17 +480,17 @@ function getEnemyTemplatesForDepth(depth: number): EnemyTemplateId[] {
 // ---- Main Generation Function ----
 
 export function generateLevel(rng: RNG, config: LevelGenConfig): LevelGenResult {
-  console.log('[DEBUG] generateLevel: starting');
+  debugLog('[DEBUG] generateLevel: starting');
   const { width, height, depth, minClearingSize, maxClearingSize, clearingCount, enemyDensity } = config;
 
   // Initialize tiles array
   const tiles: TileKind[] = new Array(width * height);
   const discovered: boolean[] = new Array(width * height).fill(false);
-  console.log('[DEBUG] generateLevel: arrays initialized');
+  debugLog('[DEBUG] generateLevel: arrays initialized');
 
   // Step 1: Generate base terrain with noise
   generateBaseTerrain(tiles, width, height, rng);
-  console.log('[DEBUG] generateLevel: base terrain done');
+  debugLog('[DEBUG] generateLevel: base terrain done');
 
   // Step 2: Generate clearings
   const clearings: Clearing[] = [];
@@ -507,24 +508,24 @@ export function generateLevel(rng: RNG, config: LevelGenConfig): LevelGenResult 
       clearings.push(newClearing);
     }
   }
-  console.log('[DEBUG] generateLevel: clearings generated:', clearings.length);
+  debugLog('[DEBUG] generateLevel: clearings generated:', clearings.length);
 
   // Step 3: Scatter tall obstacles (before carving clearings so clearings override)
   scatterTallObstacles(tiles, width, height, rng, CONFIG.biome.treeDensity, CONFIG.biome.treeMinSpacing);
-  console.log('[DEBUG] generateLevel: obstacles scattered');
+  debugLog('[DEBUG] generateLevel: obstacles scattered');
 
   // Step 4: Carve clearings (removes obstacles)
   for (const clearing of clearings) {
     carveClearing(tiles, width, clearing);
   }
-  console.log('[DEBUG] generateLevel: clearings carved');
+  debugLog('[DEBUG] generateLevel: clearings carved');
 
   // Step 5: Connect clearings with paths
-  console.log('[DEBUG] generateLevel: connecting clearings with paths');
+  debugLog('[DEBUG] generateLevel: connecting clearings with paths');
   for (let i = 1; i < clearings.length; i++) {
     const prev = clearings[i - 1];
     const curr = clearings[i];
-    console.log(`[DEBUG] generateLevel: path ${i} from (${prev.x},${prev.y}) to (${curr.x},${curr.y})`);
+    debugLog(`[DEBUG] generateLevel: path ${i} from (${prev.x},${prev.y}) to (${curr.x},${curr.y})`);
     carvePath(tiles, width, prev.x, prev.y, curr.x, curr.y, rng, CONFIG.biome.pathWindiness);
   }
 
@@ -532,26 +533,26 @@ export function generateLevel(rng: RNG, config: LevelGenConfig): LevelGenResult 
   if (clearings.length > 2) {
     const first = clearings[0];
     const last = clearings[clearings.length - 1];
-    console.log(`[DEBUG] generateLevel: loop path from (${last.x},${last.y}) to (${first.x},${first.y})`);
+    debugLog(`[DEBUG] generateLevel: loop path from (${last.x},${last.y}) to (${first.x},${first.y})`);
     carvePath(tiles, width, last.x, last.y, first.x, first.y, rng, CONFIG.biome.pathWindiness);
   }
-  console.log('[DEBUG] generateLevel: paths done');
+  debugLog('[DEBUG] generateLevel: paths done');
 
   // Step 6: Add liquid features
   if (rng.next() < CONFIG.biome.waterChance * 3) {
     addLiquidFeature(tiles, width, height, rng);
   }
-  console.log('[DEBUG] generateLevel: liquid features done');
+  debugLog('[DEBUG] generateLevel: liquid features done');
 
   // Step 7: Add small obstacles and ground details
   scatterObstacles(tiles, width, height, rng);
   scatterGroundDetails(tiles, width, height, rng);
-  console.log('[DEBUG] generateLevel: details done');
+  debugLog('[DEBUG] generateLevel: details done');
 
   // Step 8: Place transition tiles at map edges
-  console.log('[DEBUG] generateLevel: placing transitions');
+  debugLog('[DEBUG] generateLevel: placing transitions');
   const transitionPositions = placeTransitionTiles(tiles, width, height, clearings, rng);
-  console.log('[DEBUG] generateLevel: transitions placed:', transitionPositions.length);
+  debugLog('[DEBUG] generateLevel: transitions placed:', transitionPositions.length);
 
   // Step 9: Place player in first clearing
   const playerClearing = clearings[0];

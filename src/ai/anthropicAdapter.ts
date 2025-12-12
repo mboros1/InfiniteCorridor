@@ -7,8 +7,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import type { AIAdapter, RoomFlavorRequest, RoomFlavorResponse } from './contracts.js';
-import { TILE_DESCRIPTIONS, TILE_DATA } from '../domain/tiles.js';
-import { createFallbackResponse, parseRoomFlavorResponseText } from './utils.js';
+import { buildRoomFlavorPrompt, createFallbackResponse, parseRoomFlavorResponseText } from './utils.js';
 import { consoleLogger, type Logger } from '../utils/logger.js';
 
 export interface AnthropicConfig {
@@ -30,67 +29,7 @@ export function createAnthropicAdapter(config: AnthropicConfig): AIAdapter {
 
   return {
     async generateRoomFlavor(request: RoomFlavorRequest): Promise<RoomFlavorResponse> {
-      const { context, level, enemyTemplates, tileTypesPresent } = request;
-
-      // Build enemy descriptions
-      const enemyDescriptions = enemyTemplates.map((t) => {
-        const abilities = t.abilities.map((a) => a.kind).join(', ');
-        return `- Template "${t.id}": CR ${t.cr}, Role: ${t.role}, Tags: [${t.tags.join(', ')}], Abilities: [${abilities}]`;
-      }).join('\n');
-
-      // Build tile type descriptions
-      const tileDescriptions = tileTypesPresent.map((kind) => {
-        const desc = TILE_DESCRIPTIONS[kind];
-        const defaultChar = TILE_DATA[kind].char;
-        return `- "${kind}": ${desc} (default char: "${defaultChar}")`;
-      }).join('\n');
-
-      const userPrompt = `You are a narrator for a roguelike game set in the following universe:
-
-"${context.worldConfig.themePrompt}"
-
-The player has entered a new area on depth ${level.depth}.
-Area dimensions: ${level.width}x${level.height}
-
-${enemyTemplates.length > 0 ? `Enemies present (mechanical templates - you provide the flavor):
-${enemyDescriptions}` : 'The area appears empty of enemies.'}
-
-Abstract tile types present (you provide themed interpretations):
-${tileDescriptions}
-
-${context.recentNarrativeSummary ? `Recent events: ${context.recentNarrativeSummary}` : ''}
-
-Generate a JSON response with this exact structure:
-{
-  "roomDescription": "1-2 sentence atmospheric description",
-  "enemyFlavors": {
-    "enemy-template-id": {
-      "name": "Thematic Name",
-      "shortDescription": "Brief description under 10 words"
-    }
-  },
-  "tileFlavors": {
-    "TileKindName": {
-      "name": "Themed name",
-      "char": "T",
-      "fg": "#hexcolor"
-    }
-  }
-}
-
-IMPORTANT for tileFlavors:
-- Keys must be the exact tile kind names (e.g., "TallObstacle", "OpenGround")
-- "char": REQUIRED - single character (ASCII/Unicode) to display
-- "fg": REQUIRED - hex color like "#2d5a2d"
-- "bg": optional hex background color
-- "name": what this tile represents in your theme
-
-Theme interpretation examples:
-- Forest: TallObstacle="♣" (tree), OpenGround="." (grass)
-- Space station: TallObstacle="┃" (pillar), OpenGround="░" (grating)
-- Candy land: TallObstacle="♠" (lollipop), Transition="◊" (candy portal)
-
-Respond with ONLY valid JSON, no markdown.`;
+      const userPrompt = buildRoomFlavorPrompt(request);
 
       const message = await client.messages.create({
         model,

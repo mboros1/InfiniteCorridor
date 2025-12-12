@@ -6,6 +6,7 @@
   "scripts": {
     "ic-server": "bun run src/server/index.ts",
     "ic-game": "bun run src/client/cli.tsx",
+    "test": "bun test",
     "typecheck": "bun x tsc --noEmit",
     "db:push": "bun x drizzle-kit push"
   },

@@ -48,3 +48,31 @@ export async function fromPromise<T>(
   }
 }
 
+export function mapErr<T>(result: AppResult<T>, fn: (error: AppError) => AppError): AppResult<T> {
+  return result.ok ? result : { ok: false, error: fn(result.error) };
+}
+
+export async function andThenAsync<T, U>(
+  result: AppResult<T>,
+  fn: (value: T) => AppAsync<U>
+): AppAsync<U> {
+  return result.ok ? fn(result.value) : err(result.error);
+}
+
+export function unwrapOr<T>(result: AppResult<T>, fallback: T): T {
+  return result.ok ? result.value : fallback;
+}
+
+export function unwrapOrElse<T>(result: AppResult<T>, fn: (error: AppError) => T): T {
+  return result.ok ? result.value : fn(result.error);
+}
+
+export async function all<T>(promises: Array<AppAsync<T>>): AppAsync<T[]> {
+  const results = await Promise.all(promises);
+  const values: T[] = [];
+  for (const result of results) {
+    if (!result.ok) return err(result.error);
+    values.push(result.value);
+  }
+  return ok(values);
+}

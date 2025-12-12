@@ -5,6 +5,29 @@
 import { expect, test, describe } from 'bun:test';
 import { consoleLogger, nullLogger, createTestLogger, createPrefixedLogger } from '../logger.js';
 
+function withMutedConsole<T>(fn: () => T): T {
+  const original = {
+    error: console.error,
+    warn: console.warn,
+    info: console.info,
+    debug: console.debug,
+  };
+
+  console.error = () => {};
+  console.warn = () => {};
+  console.info = () => {};
+  console.debug = () => {};
+
+  try {
+    return fn();
+  } finally {
+    console.error = original.error;
+    console.warn = original.warn;
+    console.info = original.info;
+    console.debug = original.debug;
+  }
+}
+
 describe('Logger System', () => {
   
   describe('consoleLogger', () => {
@@ -22,10 +45,12 @@ describe('Logger System', () => {
     });
 
     test('should not throw when calling methods', () => {
-      expect(() => consoleLogger.error('test error')).not.toThrow();
-      expect(() => consoleLogger.warn('test warn')).not.toThrow();
-      expect(() => consoleLogger.info('test info')).not.toThrow();
-      expect(() => consoleLogger.debug('test debug')).not.toThrow();
+      withMutedConsole(() => {
+        expect(() => consoleLogger.error('test error')).not.toThrow();
+        expect(() => consoleLogger.warn('test warn')).not.toThrow();
+        expect(() => consoleLogger.info('test info')).not.toThrow();
+        expect(() => consoleLogger.debug('test debug')).not.toThrow();
+      });
     });
   });
 
@@ -154,8 +179,10 @@ describe('Logger System', () => {
       const prefixedLogger = createPrefixedLogger('TEST');
       
       // Should not throw
-      expect(() => prefixedLogger.error('test error')).not.toThrow();
-      expect(() => prefixedLogger.warn('test warn')).not.toThrow();
+      withMutedConsole(() => {
+        expect(() => prefixedLogger.error('test error')).not.toThrow();
+        expect(() => prefixedLogger.warn('test warn')).not.toThrow();
+      });
     });
 
     test('should handle empty prefix', () => {
@@ -190,14 +217,16 @@ describe('Logger System', () => {
     test('all logger methods should accept variable arguments', () => {
       const loggers = [consoleLogger, nullLogger, createTestLogger()];
       
-      loggers.forEach(logger => {
-        expect(() => logger.error('message')).not.toThrow();
-        expect(() => logger.error('message', { context: 'test' })).not.toThrow();
-        expect(() => logger.error('message', { context: 'test' }, 'extra')).not.toThrow();
-        
-        expect(() => logger.warn('message')).not.toThrow();
-        expect(() => logger.info('message')).not.toThrow();
-        expect(() => logger.debug('message')).not.toThrow();
+      withMutedConsole(() => {
+        loggers.forEach(logger => {
+          expect(() => logger.error('message')).not.toThrow();
+          expect(() => logger.error('message', { context: 'test' })).not.toThrow();
+          expect(() => logger.error('message', { context: 'test' }, 'extra')).not.toThrow();
+          
+          expect(() => logger.warn('message')).not.toThrow();
+          expect(() => logger.info('message')).not.toThrow();
+          expect(() => logger.debug('message')).not.toThrow();
+        });
       });
     });
   });
