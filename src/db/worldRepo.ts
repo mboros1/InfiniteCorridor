@@ -74,9 +74,9 @@ export async function upsertLevelState(
         width: level.width,
         height: level.height,
         stateJson: serialized,
-        tileFlavorsJson,
-        enemyFlavorsJson,
-        roomDescription: flavor?.roomDescription ?? null,
+        tileFlavorsJson: sql`coalesce(excluded.tile_flavors_json, levels.tile_flavors_json)`,
+        enemyFlavorsJson: sql`coalesce(excluded.enemy_flavors_json, levels.enemy_flavors_json)`,
+        roomDescription: sql`coalesce(excluded.room_description, levels.room_description)`,
         updatedAt: now(),
       },
     });

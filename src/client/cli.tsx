@@ -1,51 +1,27 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { render, Box, Text, useInput, useApp, useStdout, type Key } from 'ink';
-import { appendFileSync } from 'fs';
 import type { GameState, Action, Direction } from '../domain/model.js';
 import { GameMap, StatusPanel, MessageLog, HelpBar, ContextPanel } from './components/index.js';
 import { CONFIG } from '../config/index.js';
 
 const SERVER_URL = CONFIG.client.serverUrl;
-const LOG_FILE = '/tmp/ic-client.log';
-
-function log(message: string, data?: unknown): void {
-  const timestamp = new Date().toISOString().slice(11, 23);
-  const line = data !== undefined
-    ? `[${timestamp}] ${message} ${JSON.stringify(data)}\n`
-    : `[${timestamp}] ${message}\n`;
-  appendFileSync(LOG_FILE, line);
-}
-
-// Log startup
-log('=== Client starting ===');
-log(`Server URL: ${SERVER_URL}`);
 
 type Screen = 'Corridor' | 'Loading' | 'Game' | 'GameOver';
 
 // API functions
 async function startRun(themePrompt: string, seed: string): Promise<{ gameId: string; state: GameState }> {
-  log(`Connecting to ${SERVER_URL}/api/start-run`);
-  log(`Request body:`, { themePrompt, seed, difficulty: 'Normal' });
-  try {
-    const res = await fetch(`${SERVER_URL}/api/start-run`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        themePrompt,
-        seed,
-        difficulty: 'Normal',
-        rulesVersion: '0.1.0',
-      }),
-    });
-    log(`Response status: ${res.status}`);
-    if (!res.ok) throw new Error(`Failed to start run: ${res.statusText}`);
-    const data = await res.json();
-    log(`Response received, gameId: ${data.gameId}`);
-    return data;
-  } catch (err) {
-    log(`Fetch error:`, err instanceof Error ? err.message : String(err));
-    throw err;
-  }
+  const res = await fetch(`${SERVER_URL}/api/start-run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      themePrompt,
+      seed,
+      difficulty: 'Normal',
+      rulesVersion: '0.1.0',
+    }),
+  });
+  if (!res.ok) throw new Error(`Failed to start run: ${res.statusText}`);
+  return res.json();
 }
 
 type GameStatus = 'active' | 'gameOver';
@@ -59,7 +35,6 @@ async function sendCommand(gameId: string, action: Action): Promise<{ state: Gam
   if (!res.ok) throw new Error(`Command failed: ${res.statusText}`);
   return res.json();
 }
-
 
 // Hook to get terminal dimensions
 function useTerminalSize() {
@@ -88,7 +63,6 @@ function useTerminalSize() {
   return size;
 }
 
-
 // Main app
 const App: React.FC = () => {
   const { exit } = useApp();
@@ -103,19 +77,15 @@ const App: React.FC = () => {
   const [isTransitioning, setIsTransitioning] = useState(false);
 
   const handleStartGame = useCallback(async (theme: string, gameSeed: string) => {
-    log('handleStartGame called', { theme, gameSeed });
     setScreen('Loading');
     setError(null);
 
     try {
-      log('Calling startRun...');
       const { gameId: newGameId, state } = await startRun(theme, gameSeed || Date.now().toString());
-      log('startRun succeeded', { gameId: newGameId });
       setGameId(newGameId);
       setGameState(state);
       setScreen('Game');
     } catch (err) {
-      log('startRun failed', err instanceof Error ? err.message : String(err));
       setError(err instanceof Error ? err.message : 'Failed to start game');
       setScreen('Corridor');
     }
@@ -126,7 +96,6 @@ const App: React.FC = () => {
     if (isTransitioning) return; // Block input during transition
 
     try {
-      // Show transitioning message for Transition action
       if (action.kind === 'Transition') {
         setIsTransitioning(true);
       }
@@ -135,7 +104,6 @@ const App: React.FC = () => {
       setGameState(state);
       setIsTransitioning(false);
 
-      // Server determines game over
       if (gameStatus === 'gameOver') {
         setScreen('GameOver');
       }
@@ -146,16 +114,12 @@ const App: React.FC = () => {
   }, [gameId, gameState, isTransitioning]);
 
   const handleCorridorInput = useCallback((input: string, key: Key) => {
-    log('Corridor input', { input: input || '(empty)', keyReturn: key.return, inputMode, inputBuffer, themePrompt });
     if (key.return) {
-      log('Enter pressed', { inputMode, inputBuffer: inputBuffer.trim(), themePrompt });
       if (inputMode === 'theme' && inputBuffer.trim()) {
-        log('Setting theme and switching to seed mode');
         setThemePrompt(inputBuffer.trim());
         setInputBuffer('');
         setInputMode('seed');
       } else if (inputMode === 'seed') {
-        log('Starting game with theme and seed');
         handleStartGame(themePrompt, inputBuffer.trim());
         setInputBuffer('');
       }
@@ -310,8 +274,6 @@ const App: React.FC = () => {
 
   // Game screen
   if (screen === 'Game' && gameState) {
-    // Calculate viewport size based on terminal size
-    // Reserve space for context panel on the right (32 chars including border)
     const contextPanelWidth = 32;
     const mapWidth = Math.max(40, terminalSize.width - contextPanelWidth - 6);
     const viewHeight = Math.max(10, terminalSize.height - CONFIG.viewport.uiChromeHeight - 2);
