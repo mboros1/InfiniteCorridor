@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { render, Box, Text, useInput, useApp, useStdout, type Key } from 'ink';
+import { z } from 'zod';
 import type { GameState, Action, Direction } from '../domain/model.js';
 import { GameMap, StatusPanel, MessageLog, HelpBar, ContextPanel } from './components/index.js';
 import { CONFIG } from '../config/index.js';
@@ -7,6 +8,28 @@ import { CONFIG } from '../config/index.js';
 const SERVER_URL = CONFIG.client.serverUrl;
 
 type Screen = 'Corridor' | 'Loading' | 'Game' | 'GameOver';
+
+// API schemas
+const GameStateSchema = z.object({
+  world: z.record(z.any()),
+  currentLevel: z.record(z.any()),
+  worldConfig: z.object({
+    themePrompt: z.string(),
+    seed: z.string(),
+    difficulty: z.string(),
+    rulesVersion: z.string(),
+  }).passthrough(),
+}).passthrough();
+
+const StartRunResponseSchema = z.object({
+  gameId: z.string(),
+  state: GameStateSchema,
+});
+
+const CommandResponseSchema = z.object({
+  state: GameStateSchema,
+  gameStatus: z.union([z.literal('active'), z.literal('gameOver')]),
+});
 
 // API functions
 async function startRun(themePrompt: string, seed: string): Promise<{ gameId: string; state: GameState }> {
@@ -21,7 +44,8 @@ async function startRun(themePrompt: string, seed: string): Promise<{ gameId: st
     }),
   });
   if (!res.ok) throw new Error(`Failed to start run: ${res.statusText}`);
-  return res.json();
+  const parsed = StartRunResponseSchema.parse(await res.json());
+  return parsed as unknown as { gameId: string; state: GameState };
 }
 
 type GameStatus = 'active' | 'gameOver';
@@ -33,7 +57,8 @@ async function sendCommand(gameId: string, action: Action): Promise<{ state: Gam
     body: JSON.stringify({ gameId, action }),
   });
   if (!res.ok) throw new Error(`Command failed: ${res.statusText}`);
-  return res.json();
+  const parsed = CommandResponseSchema.parse(await res.json());
+  return parsed as unknown as { state: GameState; gameStatus: GameStatus };
 }
 
 // Hook to get terminal dimensions

@@ -5,6 +5,7 @@ export const worlds = sqliteTable('worlds', {
   themePrompt: text('theme_prompt'),
   seed: text('seed'),
   difficulty: text('difficulty'),
+  stateJson: text('state_json'),
   createdAt: integer('created_at', { mode: 'number' }).notNull(),
 });
 

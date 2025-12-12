@@ -1,7 +1,16 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from './client.js';
 import { edges, levels, worlds } from './schema.js';
-import type { LevelCoord, LevelEdge, LevelState, EnemyFlavor, TileFlavor, TileKind } from '../domain/model.js';
+import type { LevelCoord, LevelEdge, LevelState, EnemyFlavor, TileFlavor, TileKind, GameState } from '../domain/model.js';
+import {
+  deserializeEnemyFlavors,
+  deserializeLevel,
+  deserializeTileFlavors,
+  deserializeGameState,
+  serializeEnemyFlavors,
+  serializeLevel,
+  serializeTileFlavors,
+} from './serialization.js';
 
 function now(): number {
   return Date.now();
@@ -14,6 +23,7 @@ export async function upsertWorld(params: {
   themePrompt?: string | null;
   seed?: string | null;
   difficulty?: string | null;
+  stateJson?: string | null;
 }): Promise<void> {
   await db
     .insert(worlds)
@@ -22,6 +32,7 @@ export async function upsertWorld(params: {
       themePrompt: params.themePrompt ?? null,
       seed: params.seed ?? null,
       difficulty: params.difficulty ?? null,
+      stateJson: params.stateJson ?? null,
       createdAt: now(),
     })
     .onConflictDoUpdate({
@@ -30,8 +41,22 @@ export async function upsertWorld(params: {
         themePrompt: params.themePrompt ?? null,
         seed: params.seed ?? null,
         difficulty: params.difficulty ?? null,
+        stateJson: params.stateJson ?? sql`coalesce(worlds.state_json, NULL)`,
       },
     });
+}
+
+export async function getWorldState(worldId: string): Promise<GameState | null> {
+  const rows = await db
+    .select({
+      stateJson: worlds.stateJson,
+    })
+    .from(worlds)
+    .where(eq(worlds.id, worldId))
+    .limit(1);
+
+  if (!rows[0]?.stateJson) return null;
+  return deserializeGameState(rows[0].stateJson);
 }
 
 // ---- Level helpers ----
@@ -46,9 +71,9 @@ export async function upsertLevelState(
     roomDescription?: string | null;
   }
 ): Promise<void> {
-  const serialized = JSON.stringify(level);
-  const tileFlavorsJson = flavor?.tileFlavors ? JSON.stringify(flavor.tileFlavors) : null;
-  const enemyFlavorsJson = flavor?.enemyFlavors ? JSON.stringify(flavor.enemyFlavors) : null;
+  const serialized = serializeLevel(level);
+  const tileFlavorsJson = serializeTileFlavors(flavor?.tileFlavors);
+  const enemyFlavorsJson = serializeEnemyFlavors(flavor?.enemyFlavors);
   await db
     .insert(levels)
     .values({
@@ -99,10 +124,10 @@ export async function getLevelById(
 
   if (!rows[0]) return null;
   return {
-    level: JSON.parse(rows[0].stateJson) as LevelState,
+    level: deserializeLevel(rows[0].stateJson),
     flavor: {
-      tileFlavors: rows[0].tileFlavorsJson ? JSON.parse(rows[0].tileFlavorsJson) as Partial<Record<TileKind, TileFlavor>> : undefined,
-      enemyFlavors: rows[0].enemyFlavorsJson ? JSON.parse(rows[0].enemyFlavorsJson) as Record<string, EnemyFlavor> : undefined,
+      tileFlavors: deserializeTileFlavors(rows[0].tileFlavorsJson),
+      enemyFlavors: deserializeEnemyFlavors(rows[0].enemyFlavorsJson),
       roomDescription: rows[0].roomDescription ?? undefined,
     },
   };
@@ -127,10 +152,10 @@ export async function getLevelByCoord(
 
   if (!rows[0]) return null;
   return {
-    level: JSON.parse(rows[0].stateJson) as LevelState,
+    level: deserializeLevel(rows[0].stateJson),
     flavor: {
-      tileFlavors: rows[0].tileFlavorsJson ? JSON.parse(rows[0].tileFlavorsJson) as Partial<Record<TileKind, TileFlavor>> : undefined,
-      enemyFlavors: rows[0].enemyFlavorsJson ? JSON.parse(rows[0].enemyFlavorsJson) as Record<string, EnemyFlavor> : undefined,
+      tileFlavors: deserializeTileFlavors(rows[0].tileFlavorsJson),
+      enemyFlavors: deserializeEnemyFlavors(rows[0].enemyFlavorsJson),
       roomDescription: rows[0].roomDescription ?? undefined,
     },
   };

@@ -383,8 +383,8 @@ export function handleTransition(state: GameState): TransitionResult {
   }
 
   const destStored = updatedLevels[forwardEdge.toLevelId];
-  const destTileFlavors = destStored?.tileFlavors ?? (isNewLevel ? {} : state.tileFlavors);
-  const destEnemyFlavors = destStored?.enemyFlavors ?? (isNewLevel ? {} : state.enemyFlavors);
+  const destTileFlavors = destStored?.tileFlavors ?? {};
+  const destEnemyFlavors = destStored?.enemyFlavors ?? {};
   const destRoomDescription = destStored?.roomDescription;
 
   // Update stored level

@@ -5,6 +5,9 @@ import { createAnthropicAdapter, createMockAdapter } from '../ai/anthropicAdapte
 import { createOpenRouterAdapter } from '../ai/openRouterAdapter.js';
 import type { AIAdapter, RoomFlavorRequest } from '../ai/contracts.js';
 import type { Action, GameState, WorldConfig, Monster } from '../domain/model.js';
+import { upsertEdges, upsertLevelState, upsertWorld, getWorldState } from '../db/worldRepo.js';
+import { serializeGameState } from '../db/serialization.js';
+import { z } from 'zod';
 
 // ---- Logging ----
 
@@ -65,6 +68,36 @@ function jsonResponse(body: unknown, init?: ResponseInit): Response {
 
 function newGameId(): string {
   return `game-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+async function persistGameState(gameId: string, state: GameState): Promise<void> {
+  await upsertWorld({
+    id: gameId,
+    themePrompt: state.worldConfig.themePrompt,
+    seed: state.worldConfig.seed,
+    difficulty: state.worldConfig.difficulty,
+    stateJson: serializeGameState(state),
+  });
+
+  const levelPromises = Object.values(state.world.levels).map((stored) =>
+    upsertLevelState(gameId, stored.coord, stored.level, {
+      tileFlavors: stored.tileFlavors,
+      enemyFlavors: stored.enemyFlavors,
+      roomDescription: stored.roomDescription,
+    })
+  );
+
+  const edgePromise = upsertEdges(gameId, state.world.edges);
+  await Promise.all([...levelPromises, edgePromise]);
+}
+
+async function loadGameState(gameId: string): Promise<GameState | null> {
+  const state = await getWorldState(gameId);
+  if (state) {
+    games.set(gameId, state);
+    return state;
+  }
+  return null;
 }
 
 // Generate AI flavor for the current room
@@ -182,7 +215,14 @@ const server = Bun.serve({
 
     // Start a new run
     if (req.method === 'POST' && url.pathname === '/api/start-run') {
-      const config = (await req.json()) as WorldConfig;
+      const StartRunBody = z.object({
+        themePrompt: z.string(),
+        seed: z.string(),
+        difficulty: z.enum(['Easy', 'Normal', 'Hard']).optional(),
+        rulesVersion: z.string().optional(),
+      });
+
+      const config = StartRunBody.parse(await req.json()) as WorldConfig;
       log('HTTP', 'POST /api/start-run', {
         theme: config.themePrompt?.slice(0, 50),
         seed: config.seed,
@@ -219,18 +259,34 @@ const server = Bun.serve({
       state = await generateRoomFlavor(state);
 
       games.set(gameId, state);
+      await persistGameState(gameId, state);
       log('HTTP', `Game ${gameId} ready`);
       return jsonResponse({ gameId, state }, { headers: corsHeaders });
     }
 
     // Execute a command
     if (req.method === 'POST' && url.pathname === '/api/command') {
-      const body = (await req.json()) as {
+      const ActionSchema = z.discriminatedUnion('kind', [
+        z.object({ kind: z.literal('Move'), direction: z.enum(['Up', 'Down', 'Left', 'Right']) }),
+        z.object({ kind: z.literal('Wait') }),
+        z.object({ kind: z.literal('Attack'), direction: z.enum(['Up', 'Down', 'Left', 'Right']) }),
+        z.object({ kind: z.literal('Transition') }),
+      ]);
+
+      const CommandBody = z.object({
+        gameId: z.string(),
+        action: ActionSchema,
+      });
+
+      const body = CommandBody.parse(await req.json()) as {
         gameId: string;
         action: Action;
       };
 
-      const state = games.get(body.gameId);
+      let state = games.get(body.gameId);
+      if (!state) {
+        state = await loadGameState(body.gameId) ?? undefined;
+      }
       if (!state) {
         log('HTTP', 'ERROR: Game not found');
         return jsonResponse({ error: 'Game not found' }, { status: 404, headers: corsHeaders });
@@ -266,6 +322,7 @@ const server = Bun.serve({
       }
 
       games.set(body.gameId, newState);
+      await persistGameState(body.gameId, newState);
 
       // Log movement result
       const newPlayer = getPlayer(newState);
@@ -309,7 +366,10 @@ const server = Bun.serve({
       const gameId = url.pathname.replace('/api/game/', '');
       log('HTTP', `GET /api/game/${gameId.slice(-8)}`);
 
-      const state = games.get(gameId);
+      let state = games.get(gameId);
+      if (!state) {
+        state = await loadGameState(gameId) ?? undefined;
+      }
 
       if (!state) {
         log('HTTP', 'ERROR: Game not found');
