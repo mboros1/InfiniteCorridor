@@ -3,7 +3,7 @@ import type { Action, EntityId, GameState, WorldConfig } from '../domain/model.j
 import { APP_ERROR_CODE, appError, toAppError, type AppError } from '../errors/appError.js';
 import { E, O, TE } from '../utils/fp.js';
 import { applyCommandForActor } from './commands.js';
-import { ensurePlayerInGame } from './players.js';
+import { ensurePlayerInGame, removePlayerFromGame } from './players.js';
 import { WsClientMessageSchema, type PublicError, type WsClientMessage, type WsServerMessage } from '../protocol/ws.js';
 import type { PlayerProfilePublic, PlayerProfileSummary, WorldSummary } from '../protocol/ws.js';
 
@@ -162,6 +162,46 @@ export function createWsHub(deps: WsHubDeps): WsHub {
     tickTimersByGameId.delete(gameId);
   }
 
+  async function handlePlayerDisconnect(ws: WsLike<WsData>): Promise<void> {
+    const gameId = ws.data.gameId;
+    const playerEntityId = ws.data.playerEntityId;
+    if (!gameId || !playerEntityId) return;
+
+    try {
+      let state = deps.getGame(gameId);
+      if (!state) {
+        const loaded = await deps.loadGameState(gameId)();
+        if (E.isLeft(loaded)) {
+          deps.log?.('WS', 'handlePlayerDisconnect loadGameState failed', { gameId: gameId.slice(-8), code: loaded.left.code });
+          return;
+        }
+        if (O.isSome(loaded.right)) state = loaded.right.value;
+      }
+      if (!state) return;
+
+      const updated = removePlayerFromGame(state, playerEntityId);
+      if (updated === state) return;
+
+      deps.setGame(gameId, updated);
+      const persisted = await deps.persistGameState(gameId, updated)();
+      if (E.isLeft(persisted)) {
+        deps.log?.('DB', 'persistGameState failed while removing offline player', {
+          gameId: gameId.slice(-8),
+          playerEntityId,
+          code: persisted.left.code,
+          message: persisted.left.message,
+        });
+      }
+      broadcastState(gameId, updated);
+    } catch (cause) {
+      deps.log?.('WS', 'handlePlayerDisconnect unexpected error', {
+        gameId: gameId.slice(-8),
+        playerEntityId,
+        error: cause instanceof Error ? cause.message : String(cause),
+      });
+    }
+  }
+
   function enqueueAction(gameId: string, actorId: EntityId, action: Action): void {
     let queued = queuedActionsByGameId.get(gameId);
     if (!queued) {
@@ -275,6 +315,7 @@ export function createWsHub(deps: WsHubDeps): WsHub {
 
     try {
       if (msg.type === 'leave') {
+        await handlePlayerDisconnect(ws);
         unsubscribeSocket(ws);
         if (ws.data.playerId) releasePlayerSession(ws, ws.data.playerId);
         ws.data.playerEntityId = undefined;
@@ -284,6 +325,7 @@ export function createWsHub(deps: WsHubDeps): WsHub {
       }
 
       if (msg.type === 'logout') {
+        await handlePlayerDisconnect(ws);
         unsubscribeSocket(ws);
         if (ws.data.playerId) releasePlayerSession(ws, ws.data.playerId);
         ws.data.playerEntityId = undefined;
@@ -585,6 +627,7 @@ export function createWsHub(deps: WsHubDeps): WsHub {
   }
 
   function close(ws: WsLike<WsData>): void {
+    void handlePlayerDisconnect(ws);
     unsubscribeSocket(ws);
     if (ws.data.playerId) releasePlayerSession(ws, ws.data.playerId);
     ws.data.playerId = undefined;

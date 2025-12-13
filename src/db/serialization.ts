@@ -98,6 +98,8 @@ const positionSchema: z.ZodType<Position> = z.object({
   y: z.number().int(),
 });
 
+const offlinePlayersSchema: z.ZodType<Record<string, Position>> = z.record(z.string(), positionSchema);
+
 const monsterSpawnSchema = z.object({
   id: z.string(),
   templateId: z.string(),
@@ -195,6 +197,7 @@ const worldStateSchema: z.ZodType<WorldState, z.ZodTypeDef, unknown> = z.object(
   levels: z.record(storedLevelSchema),
   edges: z.array(levelEdgeSchema),
   currentLevelId: z.string(),
+  offlinePlayers: offlinePlayersSchema.optional(),
 });
 
 // Game state schema with proper typing

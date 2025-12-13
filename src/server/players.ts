@@ -1,4 +1,4 @@
-import type { EntityId, GameState, LevelState, Player, Position } from '../domain/model.js';
+import type { EntityId, GameState, LevelState, Player, Position, WorldState } from '../domain/model.js';
 import { isWalkable } from '../domain/tiles.js';
 import { playerEntityId } from '../domain/ids.js';
 import { addMessage, getEntityAt, getTile, updateFov } from '../engine/game.js';
@@ -146,6 +146,29 @@ function syncCurrentLevelToWorld(state: GameState, currentLevel: LevelState): Ga
   };
 }
 
+function withOfflinePlayers(world: WorldState, map?: Record<EntityId, Position>): WorldState {
+  if (!map || Object.keys(map).length === 0) {
+    if (!world.offlinePlayers) return world;
+    return { ...world, offlinePlayers: undefined };
+  }
+  return { ...world, offlinePlayers: map };
+}
+
+function offlinePlayerPosition(state: GameState, entityId: EntityId): Position | undefined {
+  return state.world.offlinePlayers?.[entityId];
+}
+
+function clearOfflineEntry(state: GameState, entityId: EntityId): GameState {
+  const offline = state.world.offlinePlayers;
+  if (!offline || !(entityId in offline)) return state;
+  const { [entityId]: _, ...rest } = offline;
+  const cleaned = Object.keys(rest).length > 0 ? rest : undefined;
+  return {
+    ...state,
+    world: withOfflinePlayers(state.world, cleaned),
+  };
+}
+
 export function ensurePlayerInGame(state: GameState, options: EnsurePlayerOptions): EnsurePlayerResult {
   const desiredEntityId = playerEntityId(options.playerId);
   const currentLevel = state.currentLevel;
@@ -160,7 +183,7 @@ export function ensurePlayerInGame(state: GameState, options: EnsurePlayerOption
 
     const updatedLevel = upsertPlayerEntity(currentLevel, updated);
     return {
-      state: syncCurrentLevelToWorld(state, updatedLevel),
+      state: clearOfflineEntry(syncCurrentLevelToWorld(state, updatedLevel), desiredEntityId),
       playerEntityId: desiredEntityId,
     };
   }
@@ -179,7 +202,7 @@ export function ensurePlayerInGame(state: GameState, options: EnsurePlayerOption
     return { state: remappedState, playerEntityId: desiredEntityId };
   }
 
-  const preferredNear = players[0]?.position;
+  const preferredNear = offlinePlayerPosition(state, desiredEntityId) ?? players[0]?.position;
   const spawnPos = findSpawnPosition(currentLevel, preferredNear);
   if (!spawnPos) {
     return {
@@ -196,5 +219,20 @@ export function ensurePlayerInGame(state: GameState, options: EnsurePlayerOption
   let next = syncCurrentLevelToWorld(state, withFov);
   next = addMessage(next, `${newPlayer.name} joins the corridor.`, 'system');
 
-  return { state: next, playerEntityId: desiredEntityId };
+  return { state: clearOfflineEntry(next, desiredEntityId), playerEntityId: desiredEntityId };
+}
+
+export function removePlayerFromGame(state: GameState, playerEntityId: EntityId): GameState {
+  const currentLevel = state.currentLevel;
+  const player = currentLevel.entities.find((e): e is Player => e.kind === 'Player' && e.id === playerEntityId);
+  if (!player) return state;
+
+  const updatedLevel = { ...currentLevel, entities: currentLevel.entities.filter((e) => e.id !== playerEntityId) };
+  const synced = syncCurrentLevelToWorld({ ...state, currentLevel: updatedLevel }, updatedLevel);
+  const offlinePlayers = synced.world.offlinePlayers ?? {};
+  const nextOffline = { ...offlinePlayers, [playerEntityId]: player.position };
+  return {
+    ...synced,
+    world: withOfflinePlayers(synced.world, nextOffline),
+  };
 }

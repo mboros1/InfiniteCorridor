@@ -51,6 +51,7 @@ export interface WorldState {
   levels: Record<LevelId, StoredLevel>;  // All visited levels
   edges: LevelEdge[];                     // Connections between levels
   currentLevelId: LevelId;                // Active level
+  offlinePlayers?: Record<EntityId, Position>; // Last known positions for disconnected players
 }
 
 // ---- Entities ----

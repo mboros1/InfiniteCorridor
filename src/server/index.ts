@@ -7,7 +7,7 @@ import { createOpenRouterAdapter } from '../ai/openRouterAdapter.js';
 import type { AIAdapter, PlayerProfileResponse, RoomFlavorRequest } from '../ai/contracts.js';
 import { createFallbackPlayerProfile } from '../ai/utils.js';
 import { consoleLogger } from '../utils/logger.js';
-import type { GameState, WorldConfig, Monster, Player, StoredLevel } from '../domain/model.js';
+import type { GameState, WorldConfig, Monster, Player, Position, StoredLevel } from '../domain/model.js';
 import { upsertEdges, upsertLevelState, upsertWorld, getWorldState } from '../db/worldRepo.js';
 import { serializeGameState } from '../db/serialization.js';
 import {
@@ -235,15 +235,55 @@ function persistGameState(gameId: string, state: GameState): TE.TaskEither<AppEr
   );
 }
 
+function detachPlayersForStartup(state: GameState): GameState {
+  const offline: Record<string, Position> = { ...(state.world.offlinePlayers ?? {}) };
+  const updatedLevels: Record<string, StoredLevel> = {};
+  let currentLevel = state.currentLevel;
+  let hasRemoved = false;
+
+  for (const [levelId, stored] of Object.entries(state.world.levels)) {
+    const players = stored.level.entities.filter((entity): entity is Player => entity.kind === 'Player');
+    if (players.length === 0) continue;
+
+    hasRemoved = true;
+    const cleanedEntities = stored.level.entities.filter((entity) => entity.kind !== 'Player');
+    const cleanedLevel = { ...stored.level, entities: cleanedEntities };
+    updatedLevels[levelId] = { ...stored, level: cleanedLevel };
+
+    for (const player of players) {
+      offline[player.id] = player.position;
+    }
+
+    if (levelId === state.world.currentLevelId) {
+      currentLevel = cleanedLevel;
+    }
+  }
+
+  if (!hasRemoved) return state;
+
+  const nextWorld = {
+    ...state.world,
+    levels: { ...state.world.levels, ...updatedLevels },
+    offlinePlayers: Object.keys(offline).length > 0 ? offline : undefined,
+  };
+
+  return {
+    ...state,
+    currentLevel,
+    world: nextWorld,
+  };
+}
+
 function loadGameState(gameId: string): TE.TaskEither<AppError, O.Option<GameState>> {
   return pipe(
     getWorldState(gameId),
     TE.map((state) => {
       if (O.isSome(state)) {
         const restored = ensureMonsterSpawns(state.value);
-        games.set(gameId, restored);
-        logLevelConfiguration(restored, 'loadGameState');
-        return O.some(restored);
+        const finalState = games.has(gameId) ? restored : detachPlayersForStartup(restored);
+        games.set(gameId, finalState);
+        logLevelConfiguration(finalState, 'loadGameState');
+        return O.some(finalState);
       }
       return state;
     })
