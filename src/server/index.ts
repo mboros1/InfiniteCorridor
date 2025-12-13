@@ -11,6 +11,8 @@ import { serializeGameState } from '../db/serialization.js';
 import { APP_ERROR_CODE, appError, toAppError, type AppError } from '../errors/appError.js';
 import { RUNTIME_CONFIG } from '../config/runtime.js';
 import { E, O, TE, pipe } from '../utils/fp.js';
+import { applyCommand } from './commands.js';
+import { ensurePlayerInGame } from './players.js';
 import { z } from 'zod';
 
 // ---- Logging ----
@@ -271,7 +273,7 @@ async function generateRoomFlavor(state: GameState): Promise<GameState> {
       },
       messages: [
         ...state.messages,
-        { turn: state.turn, text: response.roomDescription, kind: 'flavor' as const },
+        { turn: state.turn, ts: Date.now(), text: response.roomDescription, kind: 'flavor' as const },
       ],
     };
   } catch (error) {
@@ -318,6 +320,8 @@ const server = Bun.serve({
       // Start a new run
       if (req.method === 'POST' && url.pathname === '/api/start-run') {
         const StartRunBody = z.object({
+          playerId: z.string().uuid(),
+          playerName: z.string().min(1).max(50).optional(),
           themePrompt: z.string().min(1),
           seed: z.string().min(1),
           difficulty: z.enum(['Easy', 'Normal', 'Hard']).optional(),
@@ -343,6 +347,7 @@ const server = Bun.serve({
 
         log('DEBUG', 'Creating initial game state...');
         let state = createInitialGameState(config);
+        state = ensurePlayerInGame(state, { playerId: body.playerId, playerName: body.playerName }).state;
         log('DEBUG', 'Game state created successfully');
 
         const gameId = newGameId();
@@ -370,6 +375,64 @@ const server = Bun.serve({
         return jsonResponse({ gameId, state }, { headers: responseHeaders });
       }
 
+      // Join an existing run (creates player entity if missing)
+      if (req.method === 'POST' && url.pathname === '/api/join') {
+        const JoinBody = z.object({
+          gameId: z.string().min(1),
+          playerId: z.string().uuid(),
+          playerName: z.string().min(1).max(50).optional(),
+        });
+
+        const bodyResult = await parseJsonBody(req, JoinBody)();
+        if (E.isLeft(bodyResult)) return errorResponse(requestId, bodyResult.left, { headers: responseHeaders });
+        const body = bodyResult.right;
+
+        log('HTTP', 'POST /api/join', { gameId: body.gameId.slice(-8) });
+
+        let state = games.get(body.gameId);
+        if (!state) {
+          const loaded = await loadGameState(body.gameId)();
+          if (E.isLeft(loaded)) return errorResponse(requestId, loaded.left, { headers: responseHeaders });
+          if (O.isSome(loaded.right)) state = loaded.right.value;
+        }
+
+        if (!state) {
+          const notFound = appError(APP_ERROR_CODE.NotFound, 'Game not found', {
+            context: { gameId: body.gameId },
+          });
+          log('HTTP', 'ERROR: Game not found', { requestId, gameId: body.gameId.slice(-8) });
+          return errorResponse(requestId, notFound, { headers: responseHeaders });
+        }
+
+        const ensured = ensurePlayerInGame(state, { playerId: body.playerId, playerName: body.playerName });
+        const newState = ensured.state;
+        const player = newState.currentLevel.entities.find(
+          (e) => e.kind === 'Player' && e.id === ensured.playerEntityId
+        );
+        if (!player || player.kind !== 'Player') {
+          const missingPlayer = appError(APP_ERROR_CODE.Unknown, 'Player could not be created in game state', {
+            context: { gameId: body.gameId, playerId: body.playerId },
+          });
+          log('HTTP', 'ERROR: Player could not be created', { requestId, gameId: body.gameId.slice(-8) });
+          return errorResponse(requestId, missingPlayer, { headers: responseHeaders });
+        }
+
+        games.set(body.gameId, newState);
+        const persisted = await persistGameState(body.gameId, newState)();
+        if (E.isLeft(persisted)) {
+          log('DB', 'ERROR persisting join state', {
+            requestId,
+            gameId: body.gameId.slice(-8),
+            code: persisted.left.code,
+            message: persisted.left.message,
+            context: persisted.left.context,
+          });
+          return errorResponse(requestId, persisted.left, { headers: responseHeaders });
+        }
+
+        return jsonResponse({ state: newState }, { headers: responseHeaders });
+      }
+
       // Execute a command
       if (req.method === 'POST' && url.pathname === '/api/command') {
         const ActionSchema = z.discriminatedUnion('kind', [
@@ -377,10 +440,13 @@ const server = Bun.serve({
           z.object({ kind: z.literal('Wait') }),
           z.object({ kind: z.literal('Attack'), direction: z.enum(['Up', 'Down', 'Left', 'Right']) }),
           z.object({ kind: z.literal('Transition') }),
+          z.object({ kind: z.literal('Command'), text: z.string().min(1).max(500) }),
         ]);
 
         const CommandBody = z.object({
           gameId: z.string().min(1),
+          playerId: z.string().uuid(),
+          playerName: z.string().min(1).max(50).optional(),
           action: ActionSchema,
         });
 
@@ -403,24 +469,31 @@ const server = Bun.serve({
           return errorResponse(requestId, notFound, { headers: responseHeaders });
         }
 
-        const player = getPlayer(state);
+        const ensured = ensurePlayerInGame(state, { playerId: body.playerId, playerName: body.playerName });
+        state = ensured.state;
+        const player = state.currentLevel.entities.find(
+          (e) => e.kind === 'Player' && e.id === ensured.playerEntityId
+        );
         log('HTTP', 'POST /api/command', {
           gameId: body.gameId.slice(-8),
-          action: body.action,
+          action: body.action.kind === 'Command' ? { kind: 'Command', text: body.action.text.slice(0, 80) } : body.action,
           playerPos: player ? `(${player.position.x},${player.position.y})` : 'unknown',
         });
-        if (!player) {
+        if (!player || player.kind !== 'Player') {
           const missingPlayer = appError(APP_ERROR_CODE.Unknown, 'Player not found in game state', {
-            context: { gameId: body.gameId, playerId: state.playerId },
+            context: { gameId: body.gameId, playerId: body.playerId },
           });
-          log('HTTP', 'ERROR: Player not found', { requestId, gameId: body.gameId.slice(-8), playerId: state.playerId });
+          log('HTTP', 'ERROR: Player not found', { requestId, gameId: body.gameId.slice(-8), playerId: body.playerId });
           return errorResponse(requestId, missingPlayer, { headers: responseHeaders });
         }
+        // TypeScript now knows player is Player (not Item or Monster)
 
         let newState: GameState;
 
         // Handle Transition action specially to generate AI flavor for new levels
-        if (body.action.kind === 'Transition') {
+        if (body.action.kind === 'Command') {
+          newState = applyCommand(state, body.action.text);
+        } else if (body.action.kind === 'Transition') {
           const result = handleTransition(state);
           newState = result.state;
 

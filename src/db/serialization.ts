@@ -34,6 +34,9 @@ const playerEntitySchema = baseEntitySchema.extend({
   strength: z.number(),
   agility: z.number(),
   intellect: z.number(),
+  level: z.number(),
+  xp: z.number(),
+  xpToNext: z.number(),
 });
 
 const monsterEntitySchema = baseEntitySchema.extend({
@@ -57,9 +60,10 @@ const entitySchema: z.ZodType<Entity> = z.discriminatedUnion('kind', [
 // Game message schema
 const gameMessageSchema: z.ZodType<GameMessage> = z.object({
   turn: z.number(),
+  ts: z.number(),
   text: z.string(),
-  kind: z.custom<GameMessageKind>((val) => 
-    ['info', 'combat', 'flavor', 'system'].includes(val as string)
+  kind: z.custom<GameMessageKind>((val) =>
+    ['info', 'combat', 'flavor', 'system', 'chat', 'level'].includes(val as string)
   ),
 });
 

@@ -74,6 +74,10 @@ export interface Player extends BaseEntity<'Player'> {
   strength: number;
   agility: number;
   intellect: number;
+  // Leveling
+  level: number;
+  xp: number;
+  xpToNext: number;
 }
 
 // Monster references an EnemyTemplate (mechanical palette) and has its own HP.
@@ -97,7 +101,8 @@ export type Action =
   | MoveAction
   | WaitAction
   | AttackAction
-  | TransitionAction;
+  | TransitionAction
+  | CommandAction;
 
 // Move in a direction (WASD-style).
 export type MoveAction = {
@@ -119,6 +124,12 @@ export type AttackAction = {
 // Use a transition tile to move to another level.
 export type TransitionAction = {
   kind: 'Transition';
+};
+
+// Send a text command to be parsed by the server (chat/inspect/abilities, etc).
+export type CommandAction = {
+  kind: 'Command';
+  text: string;
 };
 
 // ---- Enemy templates & abilities ----
@@ -214,10 +225,11 @@ export interface LevelState {
 }
 
 // Game message for the log
-export type GameMessageKind = 'info' | 'combat' | 'flavor' | 'system';
+export type GameMessageKind = 'info' | 'combat' | 'flavor' | 'system' | 'chat' | 'level';
 
 export interface GameMessage {
   turn: number;
+  ts: number;  // Unix timestamp (ms since epoch)
   text: string;
   kind: GameMessageKind;
 }

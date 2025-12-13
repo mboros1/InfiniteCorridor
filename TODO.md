@@ -6,7 +6,7 @@ This is the actionable checklist extracted from `PROJECT_DIRECTION.md`.
 
 * [ ] Add/confirm types:
 
-  * [ ] `Action.Command { text: string }`
+  * [x] `Action.Command { text: string }`
   * [ ] `Action.Guard { targetPlayerId: EntityId }` (or command-parsed into a Guard action)
   * [ ] Optional: `Action.StartCharge { abilityId, target }` / `Action.ReleaseCharge` (or single action that transitions based on internal state)
 * [ ] Add room overlay types:
@@ -20,14 +20,14 @@ This is the actionable checklist extracted from `PROJECT_DIRECTION.md`.
 
 ## Phase 1 — command mode (high leverage, low risk)
 
-* [ ] Client: `/` opens command input mode
-* [ ] Client: sends `Action.Command` to server
-* [ ] Server: parse minimal commands:
+* [x] Client: `/` opens command input mode
+* [x] Client: sends `Action.Command` to server
+* [x] Server: parse minimal commands:
 
-  * [ ] `/say <msg>` → broadcast chat message to room
-  * [ ] `/look` → return room description + roster snapshot
-  * [ ] `/who` → list players in region/room
-* [ ] UI: show chat/system messages clearly in MessageLog
+  * [x] `/say <msg>` → broadcast chat message to room
+  * [x] `/look` → return room description + roster snapshot
+  * [x] `/who` → list players in region/room
+* [x] UI: show chat/system messages clearly in MessageLog
 
 ## Phase 2 — tick loop skeleton + per-tick initiative ordering
 

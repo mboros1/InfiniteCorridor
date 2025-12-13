@@ -16,6 +16,7 @@ import { E } from '../utils/fp.js';
 const HEX_COLOR_REGEX = /^#([0-9A-F]{3}){1,2}$/i;
 const LINE_BREAK_REGEX = /[\n\r\u2028\u2029]/;
 const UNICODE_OTHER_REGEX = /\p{C}/u;
+const WIDE_BUT_ACCEPTABLE_DISPLAY_CHARS = new Set(['♣', '♠', '♥', '♦']);
 
 export type RoomFlavorValidationIssue = {
   path: string;
@@ -49,8 +50,10 @@ function isDisplayChar(value: string): boolean {
   if (!isSingleLineSafeText(value)) return false;
   if (value.trim().length !== value.length) return false;
   if (graphemeCount(value) !== 1) return false;
-  if (stringWidth(value) !== 1) return false;
-  return true;
+  const width = stringWidth(value);
+  if (width === 1) return true;
+  if (width === 2 && WIDE_BUT_ACCEPTABLE_DISPLAY_CHARS.has(value)) return true;
+  return false;
 }
 
 const SingleLineTextSchema = z

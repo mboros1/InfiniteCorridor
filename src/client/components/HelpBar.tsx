@@ -16,7 +16,7 @@ export const HelpBar: React.FC<HelpBarProps> = ({ compact = false }) => {
   if (compact) {
     return (
       <Box marginTop={1}>
-        <Text dimColor>WASD: Move | E/&gt;: Travel (◊) | Space: Wait | Q: Quit</Text>
+        <Text dimColor>WASD: Move | E/&gt;: Travel (◊) | Space: Wait | /: Command | Q: Quit</Text>
       </Box>
     );
   }
@@ -31,6 +31,9 @@ export const HelpBar: React.FC<HelpBarProps> = ({ compact = false }) => {
       </Text>
       <Text dimColor>
         <Text color="#808080">Space:</Text> Wait
+      </Text>
+      <Text dimColor>
+        <Text color="#808080">/:</Text> Command
       </Text>
       <Text dimColor>
         <Text color="#808080">Q:</Text> Quit

@@ -54,16 +54,19 @@ export const StatusPanel: React.FC<StatusPanelProps> = ({ state }) => {
   return (
     <Box flexDirection="column" marginTop={1}>
       <Box gap={2}>
+        <Text>Lv: <Text color="#ffd700">{player.level}</Text></Text>
+        <Text color="#808080">|</Text>
         <HpBar hp={player.hp} maxHp={player.maxHp} width={15} />
         <Text color="#808080">|</Text>
-        <Text>Turn: <Text color="#00ced1">{state.turn}</Text></Text>
-        <Text color="#808080">|</Text>
-        <Text>Depth: <Text color="#00ced1">{state.currentLevel.depth}</Text></Text>
+        <Text>XP: <Text color="#daa520">{player.xp}</Text>/<Text color="#808080">{player.xpToNext}</Text></Text>
       </Box>
       <Box gap={2}>
         <Text>STR: <Text color="#ff6347">{player.strength}</Text></Text>
         <Text>AGI: <Text color="#98fb98">{player.agility}</Text></Text>
         <Text>INT: <Text color="#87ceeb">{player.intellect}</Text></Text>
+        <Text color="#808080">|</Text>
+        <Text>Turn: <Text color="#00ced1">{state.turn}</Text></Text>
+        <Text>Depth: <Text color="#00ced1">{state.currentLevel.depth}</Text></Text>
       </Box>
     </Box>
   );

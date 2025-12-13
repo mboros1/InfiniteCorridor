@@ -21,6 +21,8 @@ function getMessageColor(kind: GameMessageKind): string {
       return '#ff4444'; // Red
     case 'flavor':
       return '#00ced1'; // Cyan
+    case 'chat':
+      return '#7fffd4'; // Aquamarine
     case 'system':
       return '#ffd700'; // Gold
     default:
