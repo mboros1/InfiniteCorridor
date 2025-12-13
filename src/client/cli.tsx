@@ -32,11 +32,13 @@ const CommandResponseSchema = z.object({
 });
 
 // API functions
-async function startRun(themePrompt: string, seed: string): Promise<{ gameId: string; state: GameState }> {
+async function startRun(themePrompt: string, seed: string): Promise<{ gameId: string; playerId: string; state: GameState }> {
+  const playerId = crypto.randomUUID();
   const res = await fetch(`${SERVER_URL}/api/start-run`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
+      playerId,
       themePrompt,
       seed,
       difficulty: 'Normal',
@@ -45,16 +47,16 @@ async function startRun(themePrompt: string, seed: string): Promise<{ gameId: st
   });
   if (!res.ok) throw new Error(`Failed to start run: ${res.statusText}`);
   const parsed = StartRunResponseSchema.parse(await res.json());
-  return parsed as unknown as { gameId: string; state: GameState };
+  return { ...(parsed as unknown as { gameId: string; state: GameState }), playerId };
 }
 
 type GameStatus = 'active' | 'gameOver';
 
-async function sendCommand(gameId: string, action: Action): Promise<{ state: GameState; gameStatus: GameStatus }> {
+async function sendCommand(gameId: string, playerId: string, action: Action): Promise<{ state: GameState; gameStatus: GameStatus }> {
   const res = await fetch(`${SERVER_URL}/api/command`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ gameId, action }),
+    body: JSON.stringify({ gameId, playerId, action }),
   });
   if (!res.ok) throw new Error(`Command failed: ${res.statusText}`);
   const parsed = CommandResponseSchema.parse(await res.json());
@@ -98,6 +100,7 @@ const App: React.FC = () => {
   const [gameInputMode, setGameInputMode] = useState<'normal' | 'command'>('normal');
   const [commandBuffer, setCommandBuffer] = useState('');
   const [gameId, setGameId] = useState<string | null>(null);
+  const [playerId, setPlayerId] = useState<string | null>(null);
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [inputMode, setInputMode] = useState<'theme' | 'seed'>('theme');
@@ -108,8 +111,9 @@ const App: React.FC = () => {
     setError(null);
 
     try {
-      const { gameId: newGameId, state } = await startRun(theme, gameSeed || Date.now().toString());
+      const { gameId: newGameId, playerId: newPlayerId, state } = await startRun(theme, gameSeed || Date.now().toString());
       setGameId(newGameId);
+      setPlayerId(newPlayerId);
       setGameState(state);
       setScreen('Game');
     } catch (err) {
@@ -119,7 +123,7 @@ const App: React.FC = () => {
   }, []);
 
   const handleAction = useCallback(async (action: Action) => {
-    if (!gameId || !gameState) return;
+    if (!gameId || !playerId || !gameState) return;
     if (isTransitioning) return; // Block input during transition
 
     try {
@@ -127,7 +131,7 @@ const App: React.FC = () => {
         setIsTransitioning(true);
       }
 
-      const { state, gameStatus } = await sendCommand(gameId, action);
+      const { state, gameStatus } = await sendCommand(gameId, playerId, action);
       setGameState(state);
       setIsTransitioning(false);
 
@@ -138,7 +142,7 @@ const App: React.FC = () => {
       setIsTransitioning(false);
       setError(err instanceof Error ? err.message : 'Command failed');
     }
-  }, [gameId, gameState, isTransitioning]);
+  }, [gameId, playerId, gameState, isTransitioning]);
 
   const handleCorridorInput = useCallback((input: string, key: Key) => {
     if (key.return) {
@@ -214,6 +218,7 @@ const App: React.FC = () => {
     if (key.return) {
       setScreen('Corridor');
       setGameId(null);
+      setPlayerId(null);
       setGameState(null);
       setThemePrompt('');
       setInputMode('theme');
@@ -228,6 +233,7 @@ const App: React.FC = () => {
       if (screen === 'Game' || screen === 'GameOver') {
         setScreen('Corridor');
         setGameId(null);
+        setPlayerId(null);
         setGameState(null);
         setThemePrompt('');
         setInputMode('theme');

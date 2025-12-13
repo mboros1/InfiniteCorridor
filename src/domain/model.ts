@@ -74,6 +74,10 @@ export interface Player extends BaseEntity<'Player'> {
   strength: number;
   agility: number;
   intellect: number;
+  // Leveling
+  level: number;
+  xp: number;
+  xpToNext: number;
 }
 
 // Monster references an EnemyTemplate (mechanical palette) and has its own HP.
@@ -221,10 +225,11 @@ export interface LevelState {
 }
 
 // Game message for the log
-export type GameMessageKind = 'info' | 'combat' | 'flavor' | 'system' | 'chat';
+export type GameMessageKind = 'info' | 'combat' | 'flavor' | 'system' | 'chat' | 'level';
 
 export interface GameMessage {
   turn: number;
+  ts: number;  // Unix timestamp (ms since epoch)
   text: string;
   kind: GameMessageKind;
 }

@@ -37,7 +37,10 @@ describe('Serialization Functions', () => {
             maxHp: 20,
             strength: 10,
             agility: 10,
-            intellect: 10
+            intellect: 10,
+            level: 1,
+            xp: 0,
+            xpToNext: 25
           }
         ]
       };
@@ -299,7 +302,10 @@ describe('Serialization Functions', () => {
               maxHp: 20,
               strength: 10,
               agility: 10,
-              intellect: 10
+              intellect: 10,
+              level: 1,
+              xp: 0,
+              xpToNext: 25
             },
             {
               id: 'enemy-1',
@@ -316,6 +322,7 @@ describe('Serialization Functions', () => {
         messages: [
           {
             turn: 1,
+            ts: 1700000000000,
             text: 'Game started',
             kind: 'system'
           }
@@ -366,7 +373,10 @@ describe('Serialization Functions', () => {
             maxHp: 20,
             strength: 12,
             agility: 8,
-            intellect: 10
+            intellect: 10,
+            level: 1,
+            xp: 0,
+            xpToNext: 25
           }
         ]
       };

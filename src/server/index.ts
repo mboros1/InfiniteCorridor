@@ -273,7 +273,7 @@ async function generateRoomFlavor(state: GameState): Promise<GameState> {
       },
       messages: [
         ...state.messages,
-        { turn: state.turn, text: response.roomDescription, kind: 'flavor' as const },
+        { turn: state.turn, ts: Date.now(), text: response.roomDescription, kind: 'flavor' as const },
       ],
     };
   } catch (error) {
@@ -479,13 +479,14 @@ const server = Bun.serve({
           action: body.action.kind === 'Command' ? { kind: 'Command', text: body.action.text.slice(0, 80) } : body.action,
           playerPos: player ? `(${player.position.x},${player.position.y})` : 'unknown',
         });
-        if (!player) {
+        if (!player || player.kind !== 'Player') {
           const missingPlayer = appError(APP_ERROR_CODE.Unknown, 'Player not found in game state', {
             context: { gameId: body.gameId, playerId: body.playerId },
           });
           log('HTTP', 'ERROR: Player not found', { requestId, gameId: body.gameId.slice(-8), playerId: body.playerId });
           return errorResponse(requestId, missingPlayer, { headers: responseHeaders });
         }
+        // TypeScript now knows player is Player (not Item or Monster)
 
         let newState: GameState;
 

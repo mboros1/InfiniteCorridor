@@ -28,7 +28,7 @@ export function addMessage(
   text: string,
   kind: GameMessage['kind'] = 'info'
 ): GameState {
-  const message: GameMessage = { turn: state.turn, text, kind };
+  const message: GameMessage = { turn: state.turn, ts: Date.now(), text, kind };
   return { ...state, messages: [...state.messages, message] };
 }
 
@@ -36,6 +36,14 @@ export function addMessage(
 
 const PLAYER_FOV_RADIUS = CONFIG.gameplay.playerFovRadius;
 const MONSTER_DETECTION_RANGE_SQ = CONFIG.gameplay.monsterDetectionRangeSq;
+
+// ---- Leveling & Regen Constants ----
+
+const LEVEL_GROWTH = 1.012;        // 1.2% power increase per level
+const REGEN_EVERY_TURNS = 5;       // Heal 1 HP every N turns
+const REGEN_AMOUNT = 1;
+const XP_BASE = 25;                // xpToNext = XP_BASE * level (linear)
+const STAT_LEVEL_INTERVAL = 3;     // +1 to STR/AGI/INT every N levels
 
 // ---- Utility helpers ----
 
@@ -74,6 +82,101 @@ export function getEntityAt(level: LevelState, x: number, y: number): Entity | u
 export function getPlayer(state: GameState): Player | undefined {
   const entity = state.currentLevel.entities.find((e) => e.id === state.playerId);
   return entity?.kind === 'Player' ? entity : undefined;
+}
+
+// ---- Leveling & XP Helpers ----
+
+function xpToNextLevel(level: number): number {
+  return XP_BASE * level;
+}
+
+/**
+ * Apply level-up effects: scale maxHp, heal to full, bump stats every N levels.
+ * Returns updated player and count of levels gained.
+ */
+function applyLevelUp(player: Player): { player: Player; levelsGained: number } {
+  let p = { ...player };
+  let levelsGained = 0;
+
+  while (p.xp >= p.xpToNext) {
+    p.xp -= p.xpToNext;
+    p.level += 1;
+    levelsGained += 1;
+
+    // Scale maxHp by LEVEL_GROWTH, heal to full
+    p.maxHp = Math.ceil(p.maxHp * LEVEL_GROWTH);
+    p.hp = p.maxHp;
+
+    // Bump stats every STAT_LEVEL_INTERVAL levels
+    if (p.level % STAT_LEVEL_INTERVAL === 0) {
+      p.strength += 1;
+      p.agility += 1;
+      p.intellect += 1;
+    }
+
+    // Update next threshold
+    p.xpToNext = xpToNextLevel(p.level);
+  }
+
+  return { player: p, levelsGained };
+}
+
+/**
+ * Award XP to a player and process any level-ups.
+ * Returns updated game state with messages.
+ */
+function awardXp(state: GameState, playerId: EntityId, amount: number): GameState {
+  const level = state.currentLevel;
+  const playerIdx = level.entities.findIndex((e) => e.id === playerId && e.kind === 'Player');
+  if (playerIdx === -1) return state;
+
+  const player = level.entities[playerIdx] as Player;
+  const updatedPlayer = { ...player, xp: player.xp + amount };
+
+  const { player: finalPlayer, levelsGained } = applyLevelUp(updatedPlayer);
+
+  const updatedEntities = [...level.entities];
+  updatedEntities[playerIdx] = finalPlayer;
+
+  let resultState: GameState = {
+    ...state,
+    currentLevel: { ...level, entities: updatedEntities },
+  };
+
+  resultState = addMessage(resultState, `You gain ${amount} XP.`, 'info');
+
+  for (let i = 0; i < levelsGained; i++) {
+    const newLevel = player.level + i + 1;
+    resultState = addMessage(resultState, `You reached level ${newLevel}!`, 'level');
+  }
+
+  return resultState;
+}
+
+/**
+ * Apply passive HP regen if conditions are met.
+ */
+function applyRegen(state: GameState): GameState {
+  // Only regen on turns divisible by REGEN_EVERY_TURNS
+  if ((state.turn + 1) % REGEN_EVERY_TURNS !== 0) return state;
+
+  const player = getPlayer(state);
+  if (!player || player.hp <= 0 || player.hp >= player.maxHp) return state;
+
+  const newHp = Math.min(player.maxHp, player.hp + REGEN_AMOUNT);
+  const level = state.currentLevel;
+  const playerIdx = level.entities.findIndex((e) => e.id === state.playerId);
+
+  if (playerIdx === -1) return state;
+
+  const updatedPlayer: Player = { ...player, hp: newHp };
+  const updatedEntities = [...level.entities];
+  updatedEntities[playerIdx] = updatedPlayer;
+
+  return {
+    ...state,
+    currentLevel: { ...level, entities: updatedEntities },
+  };
 }
 
 // Field of view: simple raycasting to discover tiles
@@ -167,7 +270,7 @@ export function createInitialGameState(config: WorldConfig): GameState {
     currentLevel: levelWithFov,
     playerId: player.id,
     turn: 0,
-    messages: [{ turn: 0, text: 'You step through the portal...', kind: 'system' }],
+    messages: [{ turn: 0, ts: Date.now(), text: 'You step through the portal...', kind: 'system' }],
     enemyFlavors: {},
     tileFlavors: {},
     roomDescription: undefined,
@@ -410,7 +513,7 @@ export function handleTransition(state: GameState): TransitionResult {
     roomDescription: destRoomDescription,
     messages: [
       ...state.messages,
-      { turn: state.turn, text: 'You traverse to a new area...', kind: 'system' },
+      { turn: state.turn, ts: Date.now(), text: 'You traverse to a new area...', kind: 'system' },
     ],
   };
 
@@ -547,6 +650,16 @@ function resolveAttack(
       ? 'You have been defeated.'
       : `${getEntityName(target, state)} dies.`;
     resultState = addMessage(resultState, deathMessage, 'combat');
+
+    // Award XP when player kills a monster
+    if (attacker.kind === 'Player' && target.kind === 'Monster') {
+      const xpGained = target.maxHp;
+      const updatedLevel: LevelState = { ...resultState.currentLevel, entities: updatedEntities };
+      resultState = { ...resultState, currentLevel: updatedLevel };
+      resultState = awardXp(resultState, attacker.id, xpGained);
+      // Return early since we already updated the level
+      return resultState;
+    }
   } else {
     updatedEntities[targetIndex] = damagedTarget;
     const hitMessage = attacker.kind === 'Player'
@@ -747,6 +860,9 @@ function advanceTurn(state: GameState): GameState {
       currentState = resolveAttack(currentState, monsterId, action.direction);
     }
   }
+
+  // Apply passive HP regen
+  currentState = applyRegen(currentState);
 
   return { ...currentState, turn: currentState.turn + 1 };
 }

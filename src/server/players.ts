@@ -76,6 +76,9 @@ function defaultPlayer(name: string, position: Position, id: EntityId): Player {
     strength: 10,
     agility: 10,
     intellect: 10,
+    level: 1,
+    xp: 0,
+    xpToNext: 25,
   };
 }
 
