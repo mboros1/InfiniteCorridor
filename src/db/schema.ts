@@ -17,6 +17,7 @@ export const players = sqliteTable(
     name: text('name').notNull(),
     description: text('description').notNull(),
     tokenChar: text('token_char').notNull(),
+    tokenColor: text('token_color'),
     createdAt: integer('created_at', { mode: 'number' }).notNull(),
     updatedAt: integer('updated_at', { mode: 'number' }).notNull(),
     lastUsedAt: integer('last_used_at', { mode: 'number' }).notNull(),

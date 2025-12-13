@@ -38,6 +38,8 @@ export const GameplaySchema = z.object({
   playerFovRadius: z.number().int().min(3).max(30),
   /** Squared distance for monster detection (use squared for perf) */
   monsterDetectionRangeSq: z.number().int().min(25),
+  /** Number of turns a monster stays dead before respawning */
+  monsterRespawnTurns: z.number().int().min(1).max(100000),
 });
 
 export type GameplayConfig = z.infer<typeof GameplaySchema>;

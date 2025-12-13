@@ -57,6 +57,7 @@ function loadConfig(): GameConfig {
     gameplay: {
       playerFovRadius: parseEnvInt(env.GAME_FOV_RADIUS) ?? DEFAULT_CONFIG.gameplay.playerFovRadius,
       monsterDetectionRangeSq: parseEnvInt(env.GAME_MONSTER_RANGE_SQ) ?? DEFAULT_CONFIG.gameplay.monsterDetectionRangeSq,
+      monsterRespawnTurns: parseEnvInt(env.GAME_MONSTER_RESPAWN_TURNS) ?? DEFAULT_CONFIG.gameplay.monsterRespawnTurns,
     },
 
     biome: {

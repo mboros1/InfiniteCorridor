@@ -31,6 +31,7 @@ const playerEntitySchema = baseEntitySchema.extend({
   name: z.string(),
   description: z.string().optional().default('A traveler of the infinite corridor.'),
   tokenChar: z.string().min(1).optional().default('@'),
+  tokenColor: z.string().regex(/^#([0-9A-F]{3}){1,2}$/i).optional(),
   hp: z.number(),
   maxHp: z.number(),
   strength: z.number(),
@@ -91,6 +92,21 @@ const enemyFlavorSchema: z.ZodType<Record<string, EnemyFlavor>> = z.record(
   })
 );
 
+// Position schema
+const positionSchema: z.ZodType<Position> = z.object({
+  x: z.number().int(),
+  y: z.number().int(),
+});
+
+const monsterSpawnSchema = z.object({
+  id: z.string(),
+  templateId: z.string(),
+  position: positionSchema,
+  maxHp: z.number().nonnegative(),
+  lastSpawnedTurn: z.number().int().nonnegative().optional(),
+  lastDefeatedTurn: z.number().int().nonnegative().optional(),
+});
+
 // Level state schema with proper typing
 const levelStateSchema: z.ZodType<LevelState, z.ZodTypeDef, unknown> = z.object({
   id: z.string(),
@@ -100,6 +116,7 @@ const levelStateSchema: z.ZodType<LevelState, z.ZodTypeDef, unknown> = z.object(
   tiles: z.array(z.custom<TileKind>((val) => val in TILE_DATA)),
   discovered: z.array(z.boolean()),
   entities: z.array(entitySchema),
+  monsterSpawns: z.array(monsterSpawnSchema).optional(),
 });
 
 export function serializeLevel(level: LevelState): string {
@@ -146,12 +163,6 @@ const worldConfigSchema: z.ZodType<WorldConfig> = z.object({
     z.literal('Hard')
   ]),
   rulesVersion: z.string().min(1),
-});
-
-// Position schema
-const positionSchema: z.ZodType<Position> = z.object({
-  x: z.number().int(),
-  y: z.number().int(),
 });
 
 // Level edge schema

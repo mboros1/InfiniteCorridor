@@ -59,7 +59,7 @@ function getCellData(
 
   if (entity) {
     if (entity.kind === 'Player') {
-      return { char: entity.tokenChar || '@', fg: ENTITY_COLORS.player };
+      return { char: entity.tokenChar || '@', fg: entity.tokenColor ?? ENTITY_COLORS.player };
     }
 
     if (entity.kind === 'Monster') {

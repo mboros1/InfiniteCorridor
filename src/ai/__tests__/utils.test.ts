@@ -433,6 +433,7 @@ describe('AI Utilities', () => {
         name: 'Ash',
         description: 'A quiet wanderer with a silver compass.',
         tokenChar: '&',
+        tokenColor: '#00ff00',
       });
 
       const result = parsePlayerProfileResponseText(content);
@@ -446,7 +447,7 @@ describe('AI Utilities', () => {
       const content = JSON.stringify({
         name: 'Ash',
         description: 'A quiet wanderer.',
-        token: { char: '§' },
+        token: { char: '§', color: '#00ff00' },
       });
 
       const result = parsePlayerProfileResponseText(content);
@@ -460,6 +461,7 @@ describe('AI Utilities', () => {
         name: 'Ash',
         description: 'A quiet wanderer.',
         tokenChar: '😀',
+        tokenColor: '#00ff00',
       });
 
       const result = parsePlayerProfileResponseText(content);
@@ -473,6 +475,7 @@ describe('AI Utilities', () => {
         name: 'Line 1\nLine 2',
         description: 'ok',
         tokenChar: '@',
+        tokenColor: '#00ff00',
       });
 
       const result = parsePlayerProfileResponseText(content);
@@ -500,6 +503,7 @@ describe('AI Utilities', () => {
         name: 'Ash',
         description: 'A quiet wanderer.',
         tokenChar: '😀',
+        tokenColor: '#00ff00',
       });
 
       const parsed = parsePlayerProfileResponseText(previousText);

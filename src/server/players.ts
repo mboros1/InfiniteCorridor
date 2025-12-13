@@ -8,6 +8,7 @@ export interface EnsurePlayerProfile {
   name: string;
   description: string;
   tokenChar: string;
+  tokenColor?: string;
 }
 
 export interface EnsurePlayerOptions {
@@ -96,11 +97,13 @@ function applyProfileIfProvided(player: Player, options: EnsurePlayerOptions): P
   const name = options.profile?.name ?? options.playerName?.trim();
   const description = options.profile?.description;
   const tokenChar = options.profile?.tokenChar;
+  const tokenColor = options.profile?.tokenColor;
 
   let updated = player;
   if (name && name !== updated.name) updated = { ...updated, name };
   if (description && description !== updated.description) updated = { ...updated, description };
   if (tokenChar && tokenChar !== updated.tokenChar) updated = { ...updated, tokenChar };
+  if (tokenColor && tokenColor !== updated.tokenColor) updated = { ...updated, tokenColor };
   return updated;
 }
 

@@ -47,6 +47,7 @@ export interface PlayerProfileResponse {
   name: string;
   description: string;
   tokenChar: string;
+  tokenColor: string;
 }
 
 // Narrow interface that the rest of the code calls.

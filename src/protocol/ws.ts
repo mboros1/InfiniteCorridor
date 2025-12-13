@@ -122,6 +122,7 @@ export const PlayerProfilePublicSchema = z.object({
   name: z.string().min(1),
   description: z.string().min(1),
   tokenChar: z.string().min(1),
+  tokenColor: z.string().regex(/^#([0-9A-F]{3}){1,2}$/i).optional(),
 });
 
 export type PlayerProfilePublic = z.infer<typeof PlayerProfilePublicSchema>;
@@ -130,6 +131,7 @@ export const PlayerProfileSummarySchema = z.object({
   playerId: z.string().uuid(),
   name: z.string().min(1),
   tokenChar: z.string().min(1),
+  tokenColor: z.string().regex(/^#([0-9A-F]{3}){1,2}$/i).optional(),
   lastUsedAt: z.number().int().nonnegative(),
 });
 

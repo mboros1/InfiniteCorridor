@@ -8,7 +8,7 @@
 
 import React from 'react';
 import { Box, Text } from 'ink';
-import type { GameState, TileFlavor, TileKind, EnemyFlavor, Monster } from '../../domain/model.js';
+import type { GameState, TileFlavor, TileKind, EnemyFlavor, Monster, Player } from '../../domain/model.js';
 import { ENTITY_COLORS } from '../../domain/tiles.js';
 
 interface ContextPanelProps {
@@ -70,6 +70,44 @@ function getEntitiesInArea(
   }
 
   return monsters;
+}
+
+function getPlayersInArea(
+  state: GameState,
+  playerX: number,
+  playerY: number,
+  dx: number,
+  dy: number,
+  maxDist: number,
+  excludeEntityId?: string
+): Player[] {
+  const players: Player[] = [];
+  const level = state.currentLevel;
+
+  for (const entity of level.entities) {
+    if (entity.kind !== 'Player') continue;
+    if (excludeEntityId && entity.id === excludeEntityId) continue;
+
+    const ex = entity.position.x - playerX;
+    const ey = entity.position.y - playerY;
+
+    if (dx !== 0) {
+      if (Math.sign(ex) !== dx) continue;
+      if (Math.abs(ex) > maxDist) continue;
+      if (Math.abs(ey) > 1) continue;
+    } else {
+      if (Math.sign(ey) !== dy) continue;
+      if (Math.abs(ey) > maxDist) continue;
+      if (Math.abs(ex) > 1) continue;
+    }
+
+    const idx = entity.position.y * level.width + entity.position.x;
+    if (!level.discovered[idx]) continue;
+
+    players.push(entity);
+  }
+
+  return players;
 }
 
 // Check if tile is discovered
@@ -154,8 +192,9 @@ function scanDirection(
   playerY: number,
   dx: number,
   dy: number,
+  playerEntityId?: string,
   maxDist: number = 6
-): { tiles: Set<string>; monsters: Monster[]; blocked: boolean; atMapEdge: boolean } {
+): { tiles: Set<string>; monsters: Monster[]; players: Player[]; blocked: boolean; atMapEdge: boolean } {
   const tiles = new Set<string>();
   let blocked = false;
   let atMapEdge = false;
@@ -188,8 +227,9 @@ function scanDirection(
 
   // Get monsters in this direction (wider search)
   const monsters = getEntitiesInArea(state, playerX, playerY, dx, dy, maxDist);
+  const players = getPlayersInArea(state, playerX, playerY, dx, dy, maxDist, playerEntityId);
 
-  return { tiles, monsters, blocked, atMapEdge };
+  return { tiles, monsters, players, blocked, atMapEdge };
 }
 
 // Direction line component with colored enemy names
@@ -197,10 +237,11 @@ const DirectionLine: React.FC<{
   direction: DirectionName;
   tiles: string[];
   monsters: Monster[];
+  players: Player[];
   blocked: boolean;
   atMapEdge: boolean;
   enemyFlavors: Record<string, EnemyFlavor>;
-}> = ({ direction, tiles, monsters, blocked, atMapEdge, enemyFlavors }) => {
+}> = ({ direction, tiles, monsters, players, blocked, atMapEdge, enemyFlavors }) => {
   const elements: React.ReactNode[] = [];
 
   // Add direction label
@@ -222,8 +263,23 @@ const DirectionLine: React.FC<{
     parts.push(<Text key="more-enemies"> +{monsters.length - 2} more</Text>);
   }
 
+  // Add visible players (exclude self) with their own colors
+  for (let i = 0; i < players.length && i < 2; i++) {
+    if (parts.length > 0) {
+      parts.push(<Text key={`sep-p${i}`}>, </Text>);
+    }
+    parts.push(
+      <Text key={`player-${i}`} color={players[i].tokenColor ?? ENTITY_COLORS.player}>
+        {players[i].name}
+      </Text>
+    );
+  }
+  if (players.length > 2) {
+    parts.push(<Text key="more-players"> +{players.length - 2} more</Text>);
+  }
+
   // Add terrain (limit to 2, skip if we have enemies to save space)
-  const maxTiles = monsters.length > 0 ? 1 : 2;
+  const maxTiles = monsters.length > 0 || players.length > 0 ? 1 : 2;
   const tileList = Array.from(tiles).slice(0, maxTiles);
   for (let i = 0; i < tileList.length; i++) {
     if (parts.length > 0) {
@@ -271,11 +327,12 @@ export const ContextPanel: React.FC<ContextPanelProps> = ({ state, playerEntityI
 
   // Scan each direction
   const directionScans = DIRECTIONS.map(({ name, dx, dy }) => {
-    const scan = scanDirection(state, px, py, dx, dy);
+    const scan = scanDirection(state, px, py, dx, dy, playerEntityId ?? state.playerId);
     return {
       direction: name,
       tiles: Array.from(scan.tiles),
       monsters: scan.monsters,
+      players: scan.players,
       blocked: scan.blocked,
       atMapEdge: scan.atMapEdge,
     };
@@ -309,6 +366,7 @@ export const ContextPanel: React.FC<ContextPanelProps> = ({ state, playerEntityI
           direction={scan.direction}
           tiles={scan.tiles}
           monsters={scan.monsters}
+          players={scan.players}
           blocked={scan.blocked}
           atMapEdge={scan.atMapEdge}
           enemyFlavors={state.enemyFlavors}

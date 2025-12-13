@@ -287,6 +287,12 @@ const App: React.FC = () => {
       setIdentityIsEphemeral(ephemeral);
       setIdentity((prev) => {
         const merged: ClientIdentity = { ...(prev ?? {}), ...next };
+        const unchanged =
+          prev &&
+          prev.playerId === merged.playerId &&
+          prev.playerName === merged.playerName &&
+          prev.lastGameId === merged.lastGameId;
+        if (unchanged) return prev;
         if (!ephemeral) {
           void saveClientIdentity(merged);
         }
@@ -533,6 +539,23 @@ const App: React.FC = () => {
           if (!trimmed) return;
           const lower = trimmed.toLowerCase();
 
+          if (lower === 'p') {
+            setInputBuffer('');
+            setError(null);
+            setCorridorPhase('selectPlayer');
+            await refreshPlayers();
+            return;
+          }
+
+          if (lower === 'c') {
+            const id = crypto.randomUUID();
+            setPendingPlayerId(id);
+            setInputBuffer('');
+            setError(null);
+            setCorridorPhase('enterPlayerPrompt');
+            return;
+          }
+
           if (lower === 'r') {
             setInputBuffer('');
             if (identity) await refreshWorlds(identity.playerId);
@@ -561,7 +584,7 @@ const App: React.FC = () => {
             return;
           }
 
-          setError('Invalid selection. Enter a number, or N/G/R.');
+          setError('Invalid selection. Enter a number, or N/G/R/P/C.');
           return;
         }
 
@@ -819,6 +842,8 @@ const App: React.FC = () => {
                 <Text dimColor>N: Start a new world</Text>
                 <Text dimColor>G: Join by gameId</Text>
                 <Text dimColor>R: Refresh list</Text>
+                <Text dimColor>P: Change player</Text>
+                <Text dimColor>C: Create new player</Text>
               </Box>
             </>
           )}

@@ -20,7 +20,7 @@ const ClientIdentitySchema = z
 function identityPath(): string {
   const override = process.env.IC_CLIENT_IDENTITY_PATH?.trim();
   if (override) return override;
-  return path.join(os.homedir(), '.infinite-corridor', 'client.json');
+  return path.join(os.homedir(), '.infinite_corridor', 'game', 'client.json');
 }
 
 async function ensureParentDir(filePath: string): Promise<void> {
@@ -57,4 +57,3 @@ export async function saveClientIdentity(identity: ClientIdentity): Promise<void
   const json = JSON.stringify(identity, null, 2);
   await fs.writeFile(filePath, json, 'utf8');
 }
-

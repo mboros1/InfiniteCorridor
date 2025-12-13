@@ -21,6 +21,11 @@ import { CONFIG } from '../config/index.js';
 import { debugLog } from '../utils/debug.js';
 import { createRNG, hashSeed } from './rng.js';
 import { generateLevel, generateLevelId, getDefaultLevelConfig } from './levelgen.js';
+import {
+  initializeMonsterSpawns,
+  markMonsterSpawnDefeated,
+  respawnMonsters,
+} from './monsterSpawns.js';
 
 // Helper to add a message to the game state (exported for use in server)
 export function addMessage(
@@ -250,6 +255,7 @@ export function createInitialGameState(config: WorldConfig): GameState {
   // Update FOV from player starting position
   const levelWithFov = updateFov(level, player.position, PLAYER_FOV_RADIUS);
   debugLog('[DEBUG] createInitialGameState: FOV updated');
+  const levelWithSpawns = initializeMonsterSpawns(levelWithFov, 0);
 
   // Create edges for transitions to adjacent levels
   const edges = createEdgesForLevel(levelId, startCoord, transitionPositions, seed, levelWithFov.width, levelWithFov.height);
@@ -259,7 +265,7 @@ export function createInitialGameState(config: WorldConfig): GameState {
   const world: WorldState = {
     levels: {
       [levelId]: {
-        level: levelWithFov,
+        level: levelWithSpawns,
         coord: startCoord,
         compressedAt: 0,
       },
@@ -272,7 +278,7 @@ export function createInitialGameState(config: WorldConfig): GameState {
     worldConfig: config,
     seed,
     world,
-    currentLevel: levelWithFov,
+    currentLevel: levelWithSpawns,
     playerId: player.id,
     turn: 0,
     messages: [{ turn: 0, ts: Date.now(), text: 'You step through the portal...', kind: 'system' }],
@@ -405,6 +411,9 @@ export function handleTransition(state: GameState, actorId: EntityId = state.pla
   if (updatedLevels[forwardEdge.toLevelId]) {
     // Level exists - restore it
     destLevel = updatedLevels[forwardEdge.toLevelId].level;
+    if (!destLevel.monsterSpawns) {
+      destLevel = initializeMonsterSpawns(destLevel, state.turn);
+    }
   } else {
     // Generate new level
     isNewLevel = true;
@@ -455,7 +464,7 @@ export function handleTransition(state: GameState, actorId: EntityId = state.pla
       forwardEdge.fromPosition
     );
 
-    destLevel = generatedLevel;
+    destLevel = initializeMonsterSpawns(generatedLevel, state.turn);
 
     // Store new level
     updatedLevels[forwardEdge.toLevelId] = {
@@ -644,6 +653,7 @@ function resolveAttack(
       ? `${getEntityName(target, state)} has been defeated.`
       : `${getEntityName(target, state)} dies.`;
     resultState = addMessage(resultState, deathMessage, 'combat');
+    resultState = markMonsterSpawnDefeated(resultState, target.id, state.turn);
 
     // Award XP when player kills a monster
     if (attacker.kind === 'Player' && target.kind === 'Monster') {
@@ -773,6 +783,7 @@ export function applyTick(state: GameState, intents: ActorIntent[]): TickResult 
 
   currentState = applyMonsterActions(currentState);
   currentState = applyRegen(currentState);
+  currentState = respawnMonsters(currentState);
   currentState = { ...currentState, turn: currentState.turn + 1 };
 
   return { state: currentState, transition };

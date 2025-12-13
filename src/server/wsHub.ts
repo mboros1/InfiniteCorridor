@@ -60,6 +60,7 @@ export function createWsHub(deps: WsHubDeps): WsHub {
   const tickTimersByGameId = new Map<string, ReturnType<typeof setInterval>>();
   const tickingGames = new Set<string>();
   const socketByPlayerId = new Map<string, WsLike<WsData>>();
+  const pendingStopTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
 
   function safeSend(ws: WsLike<WsData>, msg: WsServerMessage): void {
     try {
@@ -98,6 +99,12 @@ export function createWsHub(deps: WsHubDeps): WsHub {
       socketsByGameId.set(gameId, set);
     }
 
+    const pending = pendingStopTimeouts.get(gameId);
+    if (pending) {
+      clearTimeout(pending);
+      pendingStopTimeouts.delete(gameId);
+    }
+
     set.add(ws);
     ws.data.gameId = gameId;
 
@@ -112,13 +119,27 @@ export function createWsHub(deps: WsHubDeps): WsHub {
       set.delete(ws);
       if (set.size === 0) {
         socketsByGameId.delete(gameId);
-        stopTickTimer(gameId);
+        const pending = pendingStopTimeouts.get(gameId);
+        if (pending) clearTimeout(pending);
+        const delay = Math.max(deps.tickMs, 200);
+        pendingStopTimeouts.set(
+          gameId,
+          setTimeout(() => {
+            pendingStopTimeouts.delete(gameId);
+            stopTickTimer(gameId);
+          }, delay)
+        );
       }
     }
     ws.data.gameId = undefined;
   }
 
   function ensureTickTimer(gameId: string): void {
+    const pending = pendingStopTimeouts.get(gameId);
+    if (pending) {
+      clearTimeout(pending);
+      pendingStopTimeouts.delete(gameId);
+    }
     if (tickTimersByGameId.has(gameId)) return;
     if (deps.startTickTimers === false) return;
     const timer = setInterval(() => {
@@ -128,6 +149,13 @@ export function createWsHub(deps: WsHubDeps): WsHub {
   }
 
   function stopTickTimer(gameId: string): void {
+    const sockets = socketsByGameId.get(gameId);
+    if (sockets && sockets.size > 0) return;
+    const pending = pendingStopTimeouts.get(gameId);
+    if (pending) {
+      clearTimeout(pending);
+      pendingStopTimeouts.delete(gameId);
+    }
     const timer = tickTimersByGameId.get(gameId);
     if (!timer) return;
     clearInterval(timer);
@@ -300,7 +328,12 @@ export function createWsHub(deps: WsHubDeps): WsHub {
           let state = createInitialGameState(config);
           const ensured = ensurePlayerInGame(state, {
             playerId: msg.playerId,
-            profile: { name: profile.name, description: profile.description, tokenChar: profile.tokenChar },
+            profile: {
+              name: profile.name,
+              description: profile.description,
+              tokenChar: profile.tokenChar,
+              tokenColor: profile.tokenColor,
+            },
           });
           state = ensured.state;
           state = await deps.generateRoomFlavor(state);
@@ -379,7 +412,12 @@ export function createWsHub(deps: WsHubDeps): WsHub {
 
           const ensured = ensurePlayerInGame(state, {
             playerId: msg.playerId,
-            profile: { name: profile.name, description: profile.description, tokenChar: profile.tokenChar },
+            profile: {
+              name: profile.name,
+              description: profile.description,
+              tokenChar: profile.tokenChar,
+              tokenColor: profile.tokenColor,
+            },
           });
           const newState = ensured.state;
           deps.setGame(msg.gameId, newState);
@@ -450,7 +488,12 @@ export function createWsHub(deps: WsHubDeps): WsHub {
 
           const ensured = ensurePlayerInGame(state, {
             playerId: msg.playerId,
-            profile: { name: profile.name, description: profile.description, tokenChar: profile.tokenChar },
+            profile: {
+              name: profile.name,
+              description: profile.description,
+              tokenChar: profile.tokenChar,
+              tokenColor: profile.tokenColor,
+            },
           });
           state = ensured.state;
           ws.data.playerId = msg.playerId;

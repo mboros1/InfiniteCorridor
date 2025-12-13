@@ -1,13 +1,13 @@
 import type { ServerWebSocket } from 'bun';
 import { createInitialGameState, applyAction, getPlayerById, handleTransition } from '../engine/game.js';
 import { getTemplatesForMonsters } from '../engine/templates.js';
-import { getUniqueTileTypes } from '../engine/levelgen.js';
+import { getDefaultLevelConfig, getUniqueTileTypes } from '../engine/levelgen.js';
 import { createAnthropicAdapter, createMockAdapter } from '../ai/anthropicAdapter.js';
 import { createOpenRouterAdapter } from '../ai/openRouterAdapter.js';
 import type { AIAdapter, PlayerProfileResponse, RoomFlavorRequest } from '../ai/contracts.js';
 import { createFallbackPlayerProfile } from '../ai/utils.js';
 import { consoleLogger } from '../utils/logger.js';
-import type { GameState, WorldConfig, Monster, Player } from '../domain/model.js';
+import type { GameState, WorldConfig, Monster, Player, StoredLevel } from '../domain/model.js';
 import { upsertEdges, upsertLevelState, upsertWorld, getWorldState } from '../db/worldRepo.js';
 import { serializeGameState } from '../db/serialization.js';
 import {
@@ -26,6 +26,7 @@ import { ensurePlayerInGame } from './players.js';
 import type { PlayerProfilePublic, PublicError } from '../protocol/ws.js';
 import { z } from 'zod';
 import { createWsHub, type WsData } from './wsHub.js';
+import { initializeMonsterSpawns } from '../engine/monsterSpawns.js';
 
 // ---- Logging ----
 
@@ -40,6 +41,20 @@ function log(category: string, message: string, data?: unknown): void {
   } else {
     console.log(prefix, message);
   }
+}
+
+function logLevelConfiguration(state: GameState, context: string): void {
+  const level = state.currentLevel;
+  const levelConfig = getDefaultLevelConfig(level.depth, state.worldConfig.difficulty);
+  log('LEVEL', `Loaded level (${context})`, {
+    gameId: state.world.currentLevelId,
+    depth: level.depth,
+    size: `${level.width}x${level.height}`,
+    difficulty: state.worldConfig.difficulty,
+    clearingCount: levelConfig.clearingCount,
+    enemyDensity: levelConfig.enemyDensity,
+    theme: state.worldConfig.themePrompt.slice(0, 60),
+  });
 }
 
 function mergeHeaders(...headersList: Array<HeadersInit | undefined>): Headers {
@@ -225,11 +240,50 @@ function loadGameState(gameId: string): TE.TaskEither<AppError, O.Option<GameSta
     getWorldState(gameId),
     TE.map((state) => {
       if (O.isSome(state)) {
-        games.set(gameId, state.value);
+        const restored = ensureMonsterSpawns(state.value);
+        games.set(gameId, restored);
+        logLevelConfiguration(restored, 'loadGameState');
+        return O.some(restored);
       }
       return state;
     })
   );
+}
+
+function ensureMonsterSpawns(state: GameState): GameState {
+  let currentLevel = state.currentLevel;
+  if (!currentLevel.monsterSpawns) {
+    currentLevel = initializeMonsterSpawns(currentLevel, state.turn);
+  }
+
+  let worldLevelsChanged = false;
+  const updatedLevels: Record<string, StoredLevel> = {};
+  for (const [levelId, stored] of Object.entries(state.world.levels)) {
+    const levelState = stored.level;
+    if (levelState.monsterSpawns) {
+      updatedLevels[levelId] = stored;
+      continue;
+    }
+    const withSpawns = initializeMonsterSpawns(levelState, state.turn);
+    updatedLevels[levelId] = { ...stored, level: withSpawns };
+    worldLevelsChanged = true;
+    if (levelId === state.world.currentLevelId) {
+      currentLevel = withSpawns;
+    }
+  }
+
+  if (!worldLevelsChanged && currentLevel === state.currentLevel) {
+    return state;
+  }
+
+  return {
+    ...state,
+    currentLevel,
+    world: {
+      ...state.world,
+      levels: worldLevelsChanged ? updatedLevels : state.world.levels,
+    },
+  };
 }
 
 function toPlayerProfilePublic(profile: {
@@ -237,12 +291,14 @@ function toPlayerProfilePublic(profile: {
   name: string;
   description: string;
   tokenChar: string;
+  tokenColor?: string;
 }): PlayerProfilePublic {
   return {
     playerId: profile.playerId,
     name: profile.name,
     description: profile.description,
     tokenChar: profile.tokenChar,
+    tokenColor: profile.tokenColor,
   };
 }
 
@@ -259,6 +315,7 @@ function makeFallbackProfile(playerId: string, playerName?: string): PlayerProfi
     name,
     description: 'A traveler of the infinite corridor.',
     tokenChar: '@',
+    tokenColor: '#00ff00',
   };
 }
 
@@ -277,6 +334,7 @@ function getOrCreatePlayerProfilePublic(params: {
         name: fallback.name,
         description: fallback.description,
         tokenChar: fallback.tokenChar,
+        tokenColor: fallback.tokenColor,
       });
     })
   );
@@ -311,6 +369,7 @@ function createPlayerProfileFromPrompt(
         name: profile.name,
         description: profile.description,
         tokenChar: profile.tokenChar,
+        tokenColor: profile.tokenColor,
       })
     )
   );

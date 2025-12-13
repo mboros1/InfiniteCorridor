@@ -14,6 +14,7 @@ export type PlayerProfile = {
   name: string;
   description: string;
   tokenChar: string;
+  tokenColor?: string;
   createdAt: number;
   updatedAt: number;
   lastUsedAt: number;
@@ -24,12 +25,14 @@ export type PlayerProfilePublic = {
   name: string;
   description: string;
   tokenChar: string;
+  tokenColor?: string;
 };
 
 export type PlayerProfileSummary = {
   playerId: string;
   name: string;
   tokenChar: string;
+  tokenColor?: string;
   lastUsedAt: number;
 };
 
@@ -53,6 +56,7 @@ export function getPlayerProfile(playerId: string): TE.TaskEither<AppError, O.Op
             name: players.name,
             description: players.description,
             tokenChar: players.tokenChar,
+            tokenColor: players.tokenColor,
             createdAt: players.createdAt,
             updatedAt: players.updatedAt,
             lastUsedAt: players.lastUsedAt,
@@ -75,6 +79,7 @@ export function getPlayerProfile(playerId: string): TE.TaskEither<AppError, O.Op
         name: row.name,
         description: row.description,
         tokenChar: row.tokenChar,
+        tokenColor: row.tokenColor ?? undefined,
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
         lastUsedAt: row.lastUsedAt,
@@ -89,35 +94,43 @@ export function upsertPlayerProfile(params: {
   name: string;
   description: string;
   tokenChar: string;
+  tokenColor?: string;
 }): TE.TaskEither<AppError, PlayerProfilePublic> {
   const ts = now();
 
   return pipe(
     TE.tryCatch(
-      () =>
-        db
+      () => {
+        const values: typeof players.$inferInsert = {
+          playerId: params.playerId,
+          prompt: params.prompt ?? null,
+          name: params.name,
+          description: params.description,
+          tokenChar: params.tokenChar,
+          createdAt: ts,
+          updatedAt: ts,
+          lastUsedAt: ts,
+        };
+        if (params.tokenColor) values.tokenColor = params.tokenColor;
+
+        const set: Partial<typeof players.$inferInsert> = {
+          prompt: params.prompt ?? null,
+          name: params.name,
+          description: params.description,
+          tokenChar: params.tokenChar,
+          updatedAt: ts,
+          lastUsedAt: ts,
+        };
+        if (params.tokenColor) set.tokenColor = params.tokenColor;
+
+        return db
           .insert(players)
-          .values({
-            playerId: params.playerId,
-            prompt: params.prompt ?? null,
-            name: params.name,
-            description: params.description,
-            tokenChar: params.tokenChar,
-            createdAt: ts,
-            updatedAt: ts,
-            lastUsedAt: ts,
-          })
+          .values(values)
           .onConflictDoUpdate({
             target: players.playerId,
-            set: {
-              prompt: params.prompt ?? null,
-              name: params.name,
-              description: params.description,
-              tokenChar: params.tokenChar,
-              updatedAt: ts,
-              lastUsedAt: ts,
-            },
-          }),
+            set,
+          });
+      },
       (cause) =>
         appError(APP_ERROR_CODE.DbQueryFailed, 'Failed to upsert player profile', {
           cause,
@@ -129,6 +142,7 @@ export function upsertPlayerProfile(params: {
       name: params.name,
       description: params.description,
       tokenChar: params.tokenChar,
+      tokenColor: params.tokenColor,
     }))
   );
 }
@@ -158,6 +172,7 @@ export function listPlayers(params?: { limit?: number }): TE.TaskEither<AppError
             playerId: players.playerId,
             name: players.name,
             tokenChar: players.tokenChar,
+            tokenColor: players.tokenColor,
             lastUsedAt: players.lastUsedAt,
           })
           .from(players)
@@ -168,6 +183,12 @@ export function listPlayers(params?: { limit?: number }): TE.TaskEither<AppError
           cause,
           context: { limit },
         })
+    ),
+    TE.map((rows) =>
+      rows.map((row) => ({
+        ...row,
+        tokenColor: row.tokenColor ?? undefined,
+      }))
     )
   );
 }

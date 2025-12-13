@@ -93,6 +93,7 @@ const PlayerProfileResponseSchema: z.ZodType<PlayerProfileResponse> = z.object({
   name: singleLineText(50),
   description: singleLineText(200),
   tokenChar: DisplayCharSchema,
+  tokenColor: z.string().regex(HEX_COLOR_REGEX),
 });
 
 // Export schemas for use in adapters
@@ -176,12 +177,14 @@ Return ONLY valid JSON with this exact structure:
 {
   "name": "Character name (single line, <= 50 chars)",
   "description": "Short description (single line, <= 200 chars)",
-  "tokenChar": "@"
+  "tokenChar": "@",
+  "tokenColor": "#00ff00"
 }
 
 Hard constraints:
 - All strings must be single-line (no \\n \\r U+2028 U+2029) and must not include Unicode \\p{C} characters.
 - tokenChar must be exactly 1 grapheme AND exactly 1 terminal column wide (no emoji). Use simple glyphs like "@", "&", "†", "§", "∆", "◊", "♣".
+- tokenColor must be a hex color like "#00ff00" and should be vivid/bright enough to read on a dark background.
 
 Respond with ONLY valid JSON, no markdown.`;
 }
@@ -279,9 +282,22 @@ function normalizePlayerProfileResponse(parsed: unknown): unknown {
         ? tokenObj.glyph
         : undefined;
 
+  const tokenColorCandidate =
+    (typeof obj.tokenColor === 'string' && obj.tokenColor) ||
+    (typeof obj.color === 'string' && obj.color) ||
+    undefined;
+
+  const tokenColorFromToken =
+    tokenObj && typeof tokenObj.color === 'string'
+      ? tokenObj.color
+      : tokenObj && typeof tokenObj.fg === 'string'
+        ? tokenObj.fg
+        : undefined;
+
   return {
     ...obj,
     tokenChar: tokenCharCandidate ?? tokenCharFromToken ?? obj.tokenChar,
+    tokenColor: tokenColorCandidate ?? tokenColorFromToken ?? obj.tokenColor,
   };
 }
 
@@ -380,6 +396,7 @@ Return ONLY the corrected JSON object.
 Hard constraints:
 - All strings must be single-line (no \\n \\r U+2028 U+2029) and must not include Unicode \\p{C} characters.
 - tokenChar must be exactly 1 grapheme AND exactly 1 terminal column wide (no emoji). Use simple glyphs like "@", "&", "†", "§", "∆", "◊", "♣".
+- tokenColor must be a hex color like "#00ff00".
 
 Validation issues:
 ${issueLines}
@@ -403,6 +420,7 @@ export function createFallbackPlayerProfile(request: PlayerProfileRequest): Play
     name,
     description: description || 'A traveler of the infinite corridor.',
     tokenChar: '@',
+    tokenColor: '#00ff00',
   };
 }
 

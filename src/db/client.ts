@@ -1,7 +1,12 @@
 import { Database } from 'bun:sqlite';
 import { drizzle } from 'drizzle-orm/bun-sqlite';
+import fs from 'node:fs';
+import path from 'node:path';
 import * as schema from './schema.js';
 import { RUNTIME_CONFIG } from '../config/runtime.js';
+
+const worldDbDir = path.dirname(RUNTIME_CONFIG.worldDbPath);
+fs.mkdirSync(worldDbDir, { recursive: true });
 
 export const sqlite = new Database(RUNTIME_CONFIG.worldDbPath);
 
@@ -24,6 +29,7 @@ sqlite.exec(`
     name TEXT NOT NULL,
     description TEXT NOT NULL,
     token_char TEXT NOT NULL,
+    token_color TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     last_used_at INTEGER NOT NULL
@@ -75,6 +81,14 @@ sqlite.exec(`
   CREATE INDEX IF NOT EXISTS world_players_player_recent_idx ON world_players (player_id, last_seen_at);
   CREATE INDEX IF NOT EXISTS world_players_world_recent_idx ON world_players (world_id, last_seen_at);
 `);
+
+// Lightweight migrations for older DBs (CREATE TABLE IF NOT EXISTS won't add new columns).
+try {
+  sqlite.exec('ALTER TABLE players ADD COLUMN token_color TEXT;');
+} catch (error) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!message.toLowerCase().includes('duplicate column')) throw error;
+}
 
 export const db = drizzle(sqlite, { schema });
 export type DB = typeof db;
