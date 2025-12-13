@@ -6,100 +6,25 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk';
-import { z } from 'zod';
 import type { AIAdapter, RoomFlavorRequest, RoomFlavorResponse } from './contracts.js';
-import type { EnemyFlavor, TileFlavor, TileKind } from '../domain/model.js';
-import { TILE_DESCRIPTIONS, TILE_DATA } from '../domain/tiles.js';
-
-// Zod schemas for validating AI responses
-const EnemyFlavorSchema = z.object({
-  name: z.string(),
-  shortDescription: z.string(),
-  longDescription: z.string().optional(),
-});
-
-const TileFlavorSchema = z.object({
-  name: z.string(),
-  char: z.string(),
-  fg: z.string(),
-  bg: z.string().optional(),
-  description: z.string().optional(),
-});
-
-const RoomFlavorResponseSchema = z.object({
-  roomDescription: z.string(),
-  enemyFlavors: z.record(z.string(), EnemyFlavorSchema),
-  tileFlavors: z.record(z.string(), TileFlavorSchema),
-});
-
-/**
- * Normalize AI response to handle common format issues:
- * - Convert arrays to objects (AI often returns arrays instead of keyed objects)
- * - Add default char/fg if missing from tileFlavors
- */
-function normalizeAiResponse(parsed: unknown): unknown {
-  if (typeof parsed !== 'object' || parsed === null) return parsed;
-
-  const obj = parsed as Record<string, unknown>;
-  const result: Record<string, unknown> = { ...obj };
-
-  // Convert enemyFlavors array to object keyed by id
-  if (Array.isArray(obj.enemyFlavors)) {
-    const enemyMap: Record<string, unknown> = {};
-    for (const item of obj.enemyFlavors) {
-      if (typeof item === 'object' && item !== null && 'id' in item) {
-        const { id, ...rest } = item as Record<string, unknown>;
-        enemyMap[id as string] = rest;
-      }
-    }
-    result.enemyFlavors = enemyMap;
-  }
-
-  // Convert tileFlavors array to object keyed by kind, and add defaults
-  if (Array.isArray(obj.tileFlavors)) {
-    const tileMap: Record<string, unknown> = {};
-    for (const item of obj.tileFlavors) {
-      if (typeof item === 'object' && item !== null && 'kind' in item) {
-        const { kind, ...rest } = item as Record<string, unknown>;
-        const kindStr = kind as string;
-
-        // Add default char and fg if missing
-        const tileData = TILE_DATA[kindStr as TileKind];
-        const normalized = {
-          char: tileData?.char ?? '?',
-          fg: tileData?.fg ?? '#888888',
-          ...rest,
-        };
-        tileMap[kindStr] = normalized;
-      }
-    }
-    result.tileFlavors = tileMap;
-  } else if (typeof obj.tileFlavors === 'object' && obj.tileFlavors !== null) {
-    // It's already an object, but add defaults for any missing char/fg
-    const tileMap: Record<string, unknown> = {};
-    for (const [kind, value] of Object.entries(obj.tileFlavors as Record<string, unknown>)) {
-      if (typeof value === 'object' && value !== null) {
-        const tileData = TILE_DATA[kind as TileKind];
-        const normalized = {
-          char: tileData?.char ?? '?',
-          fg: tileData?.fg ?? '#888888',
-          ...(value as Record<string, unknown>),
-        };
-        tileMap[kind] = normalized;
-      }
-    }
-    result.tileFlavors = tileMap;
-  }
-
-  return result;
-}
+import {
+  buildRoomFlavorPrompt,
+  buildRoomFlavorRepairPrompt,
+  createFallbackResponse,
+  parseRoomFlavorResponseText,
+  shouldAttemptRoomFlavorRepair,
+} from './utils.js';
+import { consoleLogger, type Logger } from '../utils/logger.js';
+import { E } from '../utils/fp.js';
 
 export interface AnthropicConfig {
   apiKey: string;
   model?: string;
+  logger?: Logger;
 }
 
 export function createAnthropicAdapter(config: AnthropicConfig): AIAdapter {
+  const logger = config.logger ?? consoleLogger;
   const client = new Anthropic({
     apiKey: config.apiKey,
   });
@@ -111,158 +36,66 @@ export function createAnthropicAdapter(config: AnthropicConfig): AIAdapter {
 
   return {
     async generateRoomFlavor(request: RoomFlavorRequest): Promise<RoomFlavorResponse> {
-      const { context, level, enemyTemplates, tileTypesPresent } = request;
+      async function callClaude(prompt: string): Promise<string> {
+        const message = await client.messages.create({
+          model,
+          max_tokens: 1500,
+          messages: [
+            {
+              role: 'user',
+              content: prompt,
+            },
+          ],
+        });
 
-      // Build enemy descriptions
-      const enemyDescriptions = enemyTemplates.map((t) => {
-        const abilities = t.abilities.map((a) => a.kind).join(', ');
-        return `- Template "${t.id}": CR ${t.cr}, Role: ${t.role}, Tags: [${t.tags.join(', ')}], Abilities: [${abilities}]`;
-      }).join('\n');
+        const textBlock = message.content.find((block) => block.type === 'text');
+        if (!textBlock || textBlock.type !== 'text') {
+          throw new Error('No text response from Claude');
+        }
 
-      // Build tile type descriptions
-      const tileDescriptions = tileTypesPresent.map((kind) => {
-        const desc = TILE_DESCRIPTIONS[kind];
-        const defaultChar = TILE_DATA[kind].char;
-        return `- "${kind}": ${desc} (default char: "${defaultChar}")`;
-      }).join('\n');
+        return textBlock.text;
+      }
 
-      const userPrompt = `You are a narrator for a roguelike game set in the following universe:
+      const userPrompt = buildRoomFlavorPrompt(request);
+      const content = await callClaude(userPrompt);
 
-"${context.worldConfig.themePrompt}"
+      const parsedResponse = parseRoomFlavorResponseText(content, logger);
+      if (E.isRight(parsedResponse)) return parsedResponse.right;
 
-The player has entered a new area on depth ${level.depth}.
-Area dimensions: ${level.width}x${level.height}
+      if (shouldAttemptRoomFlavorRepair(parsedResponse.left)) {
+        logger.warn('Claude response invalid; attempting one repair pass', {
+          code: parsedResponse.left.code,
+          message: parsedResponse.left.message,
+        });
 
-${enemyTemplates.length > 0 ? `Enemies present (mechanical templates - you provide the flavor):
-${enemyDescriptions}` : 'The area appears empty of enemies.'}
+        try {
+          const repairPrompt = buildRoomFlavorRepairPrompt({
+            previousText: content,
+            error: parsedResponse.left,
+          });
+          const repairedContent = await callClaude(repairPrompt);
+          const repaired = parseRoomFlavorResponseText(repairedContent, logger);
+          if (E.isRight(repaired)) return repaired.right;
 
-Abstract tile types present (you provide themed interpretations):
-${tileDescriptions}
+          logger.error('Claude repair failed; falling back', {
+            code: repaired.left.code,
+            message: repaired.left.message,
+            context: repaired.left.context,
+          });
+          return createFallbackResponse(request);
+        } catch (cause) {
+          logger.error('Claude repair request failed; falling back', { cause });
+          return createFallbackResponse(request);
+        }
+      }
 
-${context.recentNarrativeSummary ? `Recent events: ${context.recentNarrativeSummary}` : ''}
-
-Generate a JSON response with this exact structure:
-{
-  "roomDescription": "1-2 sentence atmospheric description",
-  "enemyFlavors": {
-    "enemy-template-id": {
-      "name": "Thematic Name",
-      "shortDescription": "Brief description under 10 words"
-    }
-  },
-  "tileFlavors": {
-    "TileKindName": {
-      "name": "Themed name",
-      "char": "T",
-      "fg": "#hexcolor"
-    }
-  }
-}
-
-IMPORTANT for tileFlavors:
-- Keys must be the exact tile kind names (e.g., "TallObstacle", "OpenGround")
-- "char": REQUIRED - single character (ASCII/Unicode) to display
-- "fg": REQUIRED - hex color like "#2d5a2d"
-- "bg": optional hex background color
-- "name": what this tile represents in your theme
-
-Theme interpretation examples:
-- Forest: TallObstacle="♣" (tree), OpenGround="." (grass)
-- Space station: TallObstacle="┃" (pillar), OpenGround="░" (grating)
-- Candy land: TallObstacle="♠" (lollipop), Transition="◊" (candy portal)
-
-Respond with ONLY valid JSON, no markdown.`;
-
-      const message = await client.messages.create({
-        model,
-        max_tokens: 1500,
-        messages: [
-          {
-            role: 'user',
-            content: userPrompt,
-          },
-        ],
+      logger.error('Claude response parse/validation failed; falling back', {
+        code: parsedResponse.left.code,
+        message: parsedResponse.left.message,
+        context: parsedResponse.left.context,
       });
-
-      // Extract text content from response
-      const textBlock = message.content.find((block) => block.type === 'text');
-      if (!textBlock || textBlock.type !== 'text') {
-        throw new Error('No text response from Claude');
-      }
-
-      const content = textBlock.text;
-
-      // Parse and validate the response
-      let parsed: unknown;
-      try {
-        // Strip any markdown code blocks if present
-        let cleaned = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-
-        // Try to repair truncated JSON by adding missing closing braces
-        if (!cleaned.endsWith('}')) {
-          const openBraces = (cleaned.match(/{/g) || []).length;
-          const closeBraces = (cleaned.match(/}/g) || []).length;
-          const missing = openBraces - closeBraces;
-          if (missing > 0) {
-            cleaned = cleaned.replace(/,?\s*"[^"]*$/, '');
-            cleaned = cleaned.replace(/,?\s*"[^"]*":\s*"[^"]*$/, '');
-            cleaned += '}'.repeat(missing);
-          }
-        }
-
-        parsed = JSON.parse(cleaned);
-      } catch (e) {
-        console.error('Failed to parse Claude response:', content, e);
-        return createFallbackResponse(request);
-      }
-
-      // Transform arrays to objects if the AI returned array format
-      const normalized = normalizeAiResponse(parsed);
-
-      const result = RoomFlavorResponseSchema.safeParse(normalized);
-      if (!result.success) {
-        console.error('Claude response validation failed:', result.error.format());
-        return createFallbackResponse(request);
-      }
-
-      // Convert tileFlavors keys to proper TileKind type
-      const typedTileFlavors: Partial<Record<TileKind, TileFlavor>> = {};
-      for (const [key, value] of Object.entries(result.data.tileFlavors)) {
-        if (key in TILE_DATA) {
-          typedTileFlavors[key as TileKind] = value;
-        }
-      }
-
-      return {
-        roomDescription: result.data.roomDescription,
-        enemyFlavors: result.data.enemyFlavors,
-        tileFlavors: typedTileFlavors,
-      };
+      return createFallbackResponse(request);
     },
-  };
-}
-
-function createFallbackResponse(request: RoomFlavorRequest): RoomFlavorResponse {
-  const enemyFlavors: Record<string, EnemyFlavor> = {};
-
-  for (const template of request.enemyTemplates) {
-    const roleNames: Record<string, string> = {
-      Common: 'Lurker',
-      Elite: 'Champion',
-      Boss: 'Overlord',
-    };
-
-    enemyFlavors[template.id] = {
-      name: `${roleNames[template.role] ?? 'Creature'} of the Depths`,
-      shortDescription: `A ${template.role.toLowerCase()} enemy`,
-    };
-  }
-
-  // Return empty tileFlavors - will fall back to defaults
-  return {
-    roomDescription: 'You enter a dimly lit area. The air is thick with tension.',
-    enemyFlavors,
-    tileFlavors: {},
   };
 }
 

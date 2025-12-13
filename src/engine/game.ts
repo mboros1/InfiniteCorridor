@@ -18,6 +18,7 @@ import type {
 } from '../domain/model.js';
 import { isWalkable, isTransparent } from '../domain/tiles.js';
 import { CONFIG } from '../config/index.js';
+import { debugLog } from '../utils/debug.js';
 import { createRNG, hashSeed } from './rng.js';
 import { generateLevel, generateLevelId, getDefaultLevelConfig } from './levelgen.js';
 
@@ -115,20 +116,20 @@ export function updateFov(level: LevelState, playerPos: Position, radius: number
 // ---- Game initialization ----
 
 export function createInitialGameState(config: WorldConfig): GameState {
-  console.log('[DEBUG] createInitialGameState: starting');
+  debugLog('[DEBUG] createInitialGameState: starting');
   const seed = hashSeed(config.seed);
   const rng = createRNG(seed);
-  console.log('[DEBUG] createInitialGameState: seed hashed');
+  debugLog('[DEBUG] createInitialGameState: seed hashed');
 
   // Starting level is at origin (0, 0)
   const startCoord: LevelCoord = { x: 0, y: 0 };
   const levelId = generateLevelId(seed, startCoord);
-  console.log('[DEBUG] createInitialGameState: levelId generated:', levelId);
+  debugLog('[DEBUG] createInitialGameState: levelId generated:', levelId);
 
   const levelConfig = getDefaultLevelConfig(1, config.difficulty);
-  console.log('[DEBUG] createInitialGameState: calling generateLevel');
+  debugLog('[DEBUG] createInitialGameState: calling generateLevel');
   const { level, transitionPositions } = generateLevel(rng, levelConfig);
-  console.log('[DEBUG] createInitialGameState: level generated, transitions:', transitionPositions.length);
+  debugLog('[DEBUG] createInitialGameState: level generated, transitions:', transitionPositions.length);
 
   // Set proper level ID
   level.id = levelId;
@@ -136,15 +137,15 @@ export function createInitialGameState(config: WorldConfig): GameState {
   // Find the player entity
   const player = level.entities.find((e) => e.kind === 'Player');
   if (!player) throw new Error('Level generation failed: no player');
-  console.log('[DEBUG] createInitialGameState: player found');
+  debugLog('[DEBUG] createInitialGameState: player found');
 
   // Update FOV from player starting position
   const levelWithFov = updateFov(level, player.position, PLAYER_FOV_RADIUS);
-  console.log('[DEBUG] createInitialGameState: FOV updated');
+  debugLog('[DEBUG] createInitialGameState: FOV updated');
 
   // Create edges for transitions to adjacent levels
   const edges = createEdgesForLevel(levelId, startCoord, transitionPositions, seed, levelWithFov.width, levelWithFov.height);
-  console.log('[DEBUG] createInitialGameState: edges created:', edges.length);
+  debugLog('[DEBUG] createInitialGameState: edges created:', edges.length);
 
   // Initialize world state
   const world: WorldState = {
