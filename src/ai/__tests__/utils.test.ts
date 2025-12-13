@@ -8,12 +8,15 @@ import {
   createFallbackResponse,
   RoomFlavorResponseSchema,
   parseRoomFlavorResponseText,
+  buildRoomFlavorRepairPrompt,
+  shouldAttemptRoomFlavorRepair,
 } from '../utils.js';
 import { nullLogger } from '../../utils/logger.js';
+import { E } from '../../utils/fp.js';
 import type { RoomFlavorRequest } from '../contracts.js';
 import type { EnemyTemplate, WorldConfig } from '../../domain/model.js';
 import type { TileKind } from '../../domain/tiles.js';
-import { APP_ERROR_CODE } from '../../errors/appError.js';
+import { APP_ERROR_CODE, appError } from '../../errors/appError.js';
 
 function makeEnemyTemplate(id: string, role: EnemyTemplate['role']): EnemyTemplate {
   return {
@@ -254,12 +257,68 @@ describe('AI Utilities', () => {
       ].join('\n');
 
       const result = parseRoomFlavorResponseText(content, nullLogger);
-      expect(result.ok).toBeTrue();
-      if (!result.ok) throw new Error('Expected ok result');
+      expect(E.isRight(result)).toBeTrue();
+      if (E.isLeft(result)) throw new Error('Expected right result');
 
-      expect(result.value.roomDescription).toBe('A test room');
-      expect(result.value.enemyFlavors.e1.name).toBe('Goblin');
-      expect(result.value.tileFlavors.TallObstacle?.char).toBe('T');
+      expect(result.right.roomDescription).toBe('A test room');
+      expect(result.right.enemyFlavors.e1.name).toBe('Goblin');
+      expect(result.right.tileFlavors.TallObstacle?.char).toBe('T');
+    });
+
+    test('rejects multi-column/emoji tile chars', () => {
+      const content = JSON.stringify({
+        roomDescription: 'A test room',
+        enemyFlavors: {},
+        tileFlavors: {
+          TallObstacle: { name: 'Tree', char: '😀', fg: '#2d5a2d' },
+        },
+      });
+
+      const result = parseRoomFlavorResponseText(content, nullLogger);
+      expect(E.isLeft(result)).toBeTrue();
+      if (E.isRight(result)) throw new Error('Expected left result');
+      expect(result.left.code).toBe(APP_ERROR_CODE.AiResponseInvalid);
+    });
+
+    test('rejects multi-character tile chars', () => {
+      const content = JSON.stringify({
+        roomDescription: 'A test room',
+        enemyFlavors: {},
+        tileFlavors: {
+          TallObstacle: { name: 'Tree', char: '##', fg: '#2d5a2d' },
+        },
+      });
+
+      const result = parseRoomFlavorResponseText(content, nullLogger);
+      expect(E.isLeft(result)).toBeTrue();
+      if (E.isRight(result)) throw new Error('Expected left result');
+      expect(result.left.code).toBe(APP_ERROR_CODE.AiResponseInvalid);
+    });
+
+    test('rejects multi-line descriptions', () => {
+      const content = JSON.stringify({
+        roomDescription: 'Line 1\nLine 2',
+        enemyFlavors: {},
+        tileFlavors: {},
+      });
+
+      const result = parseRoomFlavorResponseText(content, nullLogger);
+      expect(E.isLeft(result)).toBeTrue();
+      if (E.isRight(result)) throw new Error('Expected left result');
+      expect(result.left.code).toBe(APP_ERROR_CODE.AiResponseInvalid);
+    });
+
+    test('rejects control/format characters in text (bidi override)', () => {
+      const content = JSON.stringify({
+        roomDescription: `A test room\u202Eevil`,
+        enemyFlavors: {},
+        tileFlavors: {},
+      });
+
+      const result = parseRoomFlavorResponseText(content, nullLogger);
+      expect(E.isLeft(result)).toBeTrue();
+      if (E.isRight(result)) throw new Error('Expected left result');
+      expect(result.left.code).toBe(APP_ERROR_CODE.AiResponseInvalid);
     });
 
     test('sanitizes invalid tile colors to defaults', () => {
@@ -272,10 +331,10 @@ describe('AI Utilities', () => {
       });
 
       const result = parseRoomFlavorResponseText(content, nullLogger);
-      expect(result.ok).toBeTrue();
-      if (!result.ok) throw new Error('Expected ok result');
+      expect(E.isRight(result)).toBeTrue();
+      if (E.isLeft(result)) throw new Error('Expected right result');
 
-      const fg = result.value.tileFlavors.TallObstacle?.fg;
+      const fg = result.right.tileFlavors.TallObstacle?.fg;
       expect(fg).toBeDefined();
       expect(fg).toMatch(/^#([0-9A-F]{3}){1,2}$/i);
     });
@@ -284,9 +343,9 @@ describe('AI Utilities', () => {
       const content = 'not json';
       const result = parseRoomFlavorResponseText(content, nullLogger);
 
-      expect(result.ok).toBeFalse();
-      if (result.ok) throw new Error('Expected err result');
-      expect(result.error.code).toBe(APP_ERROR_CODE.AiResponseParseFailed);
+      expect(E.isLeft(result)).toBeTrue();
+      if (E.isRight(result)) throw new Error('Expected left result');
+      expect(result.left.code).toBe(APP_ERROR_CODE.AiResponseParseFailed);
     });
 
     test('returns invalid error code on schema mismatch', () => {
@@ -298,25 +357,70 @@ describe('AI Utilities', () => {
       });
 
       const result = parseRoomFlavorResponseText(content, nullLogger);
-      expect(result.ok).toBeTrue();
-      if (!result.ok) throw new Error('Expected ok result');
-      expect(result.value.roomDescription).toBe('A test room');
+      expect(E.isRight(result)).toBeTrue();
+      if (E.isLeft(result)) throw new Error('Expected right result');
+      expect(result.right.roomDescription).toBe('A test room');
 
       const invalidContent = JSON.stringify({
         enemyFlavors: {},
         tileFlavors: {},
       });
       const invalidResult = parseRoomFlavorResponseText(invalidContent, nullLogger);
-      expect(invalidResult.ok).toBeFalse();
-      if (invalidResult.ok) throw new Error('Expected err result');
-      expect(invalidResult.error.code).toBe(APP_ERROR_CODE.AiResponseInvalid);
+      expect(E.isLeft(invalidResult)).toBeTrue();
+      if (E.isRight(invalidResult)) throw new Error('Expected left result');
+      expect(invalidResult.left.code).toBe(APP_ERROR_CODE.AiResponseInvalid);
     });
 
     test('returns empty error code on blank content', () => {
       const result = parseRoomFlavorResponseText('   ', nullLogger);
-      expect(result.ok).toBeFalse();
-      if (result.ok) throw new Error('Expected err result');
-      expect(result.error.code).toBe(APP_ERROR_CODE.AiResponseEmpty);
+      expect(E.isLeft(result)).toBeTrue();
+      if (E.isRight(result)) throw new Error('Expected left result');
+      expect(result.left.code).toBe(APP_ERROR_CODE.AiResponseEmpty);
+    });
+  });
+
+  describe('repair helpers', () => {
+    test('shouldAttemptRoomFlavorRepair is true only for parse/invalid', () => {
+      expect(shouldAttemptRoomFlavorRepair(appError(APP_ERROR_CODE.AiResponseParseFailed, 'x'))).toBeTrue();
+      expect(shouldAttemptRoomFlavorRepair(appError(APP_ERROR_CODE.AiResponseInvalid, 'x'))).toBeTrue();
+      expect(shouldAttemptRoomFlavorRepair(appError(APP_ERROR_CODE.AiResponseEmpty, 'x'))).toBeFalse();
+      expect(shouldAttemptRoomFlavorRepair(appError(APP_ERROR_CODE.Unknown, 'x'))).toBeFalse();
+    });
+
+    test('buildRoomFlavorRepairPrompt includes validation issue paths when available', () => {
+      const previousText = JSON.stringify({
+        roomDescription: 'A test room',
+        enemyFlavors: {},
+        tileFlavors: {
+          TallObstacle: { name: 'Tree', char: '😀', fg: '#2d5a2d' },
+        },
+      });
+
+      const parsed = parseRoomFlavorResponseText(previousText, nullLogger);
+      expect(E.isLeft(parsed)).toBeTrue();
+      if (E.isRight(parsed)) throw new Error('Expected left result');
+      expect(parsed.left.code).toBe(APP_ERROR_CODE.AiResponseInvalid);
+
+      const prompt = buildRoomFlavorRepairPrompt({ previousText, error: parsed.left });
+      expect(prompt).toContain('Validation issues:');
+      expect(prompt).toContain('tileFlavors.TallObstacle.char');
+      expect(prompt).toContain('Previous JSON:');
+      expect(prompt).toContain('"char":"😀"');
+    });
+
+    test('buildRoomFlavorRepairPrompt falls back to root message when issues missing', () => {
+      const previousText = 'not json';
+      const parsed = parseRoomFlavorResponseText(previousText, nullLogger);
+      expect(E.isLeft(parsed)).toBeTrue();
+      if (E.isRight(parsed)) throw new Error('Expected left result');
+      expect(parsed.left.code).toBe(APP_ERROR_CODE.AiResponseParseFailed);
+
+      const prompt = buildRoomFlavorRepairPrompt({ previousText, error: parsed.left });
+      expect(prompt).toContain('Validation issues:');
+      expect(prompt).toContain('(root):');
+      expect(prompt).toContain(parsed.left.message);
+      expect(prompt).toContain('Previous JSON:');
+      expect(prompt).toContain('not json');
     });
   });
 });

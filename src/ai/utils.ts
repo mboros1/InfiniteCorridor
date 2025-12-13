@@ -4,33 +4,83 @@
  */
 
 import { z } from 'zod';
+import stringWidth from 'string-width';
 import type { RoomFlavorRequest, RoomFlavorResponse } from './contracts.js';
 import type { EnemyFlavor, TileFlavor, TileKind } from '../domain/model.js';
 import { TILE_DATA, TILE_DESCRIPTIONS } from '../domain/tiles.js';
 import type { Logger } from '../utils/logger.js';
 import { consoleLogger } from '../utils/logger.js';
-import { APP_ERROR_CODE, appError } from '../errors/appError.js';
-import { err, ok, tryCatch, type AppResult } from '../utils/appResult.js';
+import { APP_ERROR_CODE, appError, type AppError } from '../errors/appError.js';
+import { E } from '../utils/fp.js';
 
 const HEX_COLOR_REGEX = /^#([0-9A-F]{3}){1,2}$/i;
+const LINE_BREAK_REGEX = /[\n\r\u2028\u2029]/;
+const UNICODE_OTHER_REGEX = /\p{C}/u;
+
+export type RoomFlavorValidationIssue = {
+  path: string;
+  message: string;
+};
+
+function formatZodIssues(error: z.ZodError): RoomFlavorValidationIssue[] {
+  return error.issues.map((issue) => ({
+    path: issue.path.join('.'),
+    message: issue.message,
+  }));
+}
+
+function graphemeCount(value: string): number {
+  if (typeof Intl !== 'undefined' && 'Segmenter' in Intl) {
+    const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+    let count = 0;
+    for (const _ of segmenter.segment(value)) count++;
+    return count;
+  }
+
+  return Array.from(value).length;
+}
+
+function isSingleLineSafeText(value: string): boolean {
+  return !LINE_BREAK_REGEX.test(value) && !UNICODE_OTHER_REGEX.test(value);
+}
+
+function isDisplayChar(value: string): boolean {
+  if (!value) return false;
+  if (!isSingleLineSafeText(value)) return false;
+  if (value.trim().length !== value.length) return false;
+  if (graphemeCount(value) !== 1) return false;
+  if (stringWidth(value) !== 1) return false;
+  return true;
+}
+
+const SingleLineTextSchema = z
+  .string()
+  .min(1)
+  .refine(isSingleLineSafeText, {
+    message: 'Must be single-line and must not include control/format characters',
+  });
+
+const DisplayCharSchema = z.string().refine(isDisplayChar, {
+  message: 'Must be a single, non-whitespace, single-column display character (no emoji)',
+});
 
 // Zod schemas for validating AI responses
 const EnemyFlavorSchema = z.object({
-  name: z.string().min(1),
-  shortDescription: z.string().min(1),
-  longDescription: z.string().optional(),
+  name: SingleLineTextSchema,
+  shortDescription: SingleLineTextSchema,
+  longDescription: SingleLineTextSchema.optional(),
 });
 
 const TileFlavorSchema = z.object({
-  name: z.string(),
-  char: z.string().min(1),
+  name: SingleLineTextSchema,
+  char: DisplayCharSchema,
   fg: z.string().regex(HEX_COLOR_REGEX),
   bg: z.string().regex(HEX_COLOR_REGEX).optional(),
-  description: z.string().optional(),
+  description: SingleLineTextSchema.optional(),
 });
 
 const RoomFlavorResponseSchema = z.object({
-  roomDescription: z.string(),
+  roomDescription: SingleLineTextSchema,
   enemyFlavors: z.record(z.string(), EnemyFlavorSchema),
   tileFlavors: z.record(z.string(), TileFlavorSchema),
 });
@@ -132,13 +182,13 @@ function cleanAiJsonText(content: string): string {
 export function parseRoomFlavorResponseText(
   content: string,
   logger: Logger = consoleLogger
-): AppResult<RoomFlavorResponse> {
+): E.Either<AppError, RoomFlavorResponse> {
   if (!content.trim()) {
-    return err(appError(APP_ERROR_CODE.AiResponseEmpty, 'AI response was empty'));
+    return E.left(appError(APP_ERROR_CODE.AiResponseEmpty, 'AI response was empty'));
   }
 
   const cleaned = cleanAiJsonText(content);
-  const parsed = tryCatch(
+  const parsed = E.tryCatch(
     () => JSON.parse(cleaned) as unknown,
     (cause) =>
       appError(APP_ERROR_CODE.AiResponseParseFailed, 'Failed to parse AI JSON response', {
@@ -148,17 +198,19 @@ export function parseRoomFlavorResponseText(
         },
       })
   );
-  if (!parsed.ok) return parsed;
+  if (E.isLeft(parsed)) return parsed;
 
-  const normalized = normalizeAiResponse(parsed.value, logger);
+  const normalized = normalizeAiResponse(parsed.right, logger);
   const result = RoomFlavorResponseSchema.safeParse(normalized);
   if (!result.success) {
-    return err(
+    const validationIssues = formatZodIssues(result.error);
+    return E.left(
       appError(APP_ERROR_CODE.AiResponseInvalid, 'AI response failed schema validation', {
         cause: result.error,
         context: {
           contentPreview: contentPreview(content),
           validationErrors: result.error.format(),
+          validationIssues,
         },
       })
     );
@@ -173,11 +225,46 @@ export function parseRoomFlavorResponseText(
     }
   }
 
-  return ok({
+  return E.right({
     roomDescription: result.data.roomDescription,
     enemyFlavors: result.data.enemyFlavors,
     tileFlavors: typedTileFlavors,
   });
+}
+
+function truncateForPrompt(text: string, maxLen = 8000): string {
+  if (text.length <= maxLen) return text;
+  return text.slice(0, maxLen) + '\n...<truncated>';
+}
+
+export function shouldAttemptRoomFlavorRepair(error: AppError): boolean {
+  return error.code === APP_ERROR_CODE.AiResponseParseFailed || error.code === APP_ERROR_CODE.AiResponseInvalid;
+}
+
+export function buildRoomFlavorRepairPrompt(params: { previousText: string; error: AppError }): string {
+  const issuesRaw = params.error.context?.validationIssues;
+  const issues = Array.isArray(issuesRaw) ? (issuesRaw as RoomFlavorValidationIssue[]) : [];
+
+  const issueLines =
+    issues.length > 0
+      ? issues.map((issue) => `- ${issue.path || '(root)'}: ${issue.message}`).join('\n')
+      : `- (root): ${params.error.message}`;
+
+  const previousJsonText = truncateForPrompt(cleanAiJsonText(params.previousText));
+
+  return `The JSON you returned failed validation. Fix it by changing as few fields as possible.
+Return ONLY the corrected JSON object.
+
+Hard constraints:
+- All strings must be single-line (no \\n \\r U+2028 U+2029) and must not include Unicode \\p{C} characters.
+- tileFlavors.*.char must be exactly 1 grapheme AND exactly 1 terminal column wide (no emoji). Use simple glyphs like ".", "#", "░", "█", "┃", "─", "◊", "♣".
+
+Validation issues:
+${issueLines}
+
+Previous JSON:
+${previousJsonText}
+`;
 }
 
 /**

@@ -7,8 +7,15 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import type { AIAdapter, RoomFlavorRequest, RoomFlavorResponse } from './contracts.js';
-import { buildRoomFlavorPrompt, createFallbackResponse, parseRoomFlavorResponseText } from './utils.js';
+import {
+  buildRoomFlavorPrompt,
+  buildRoomFlavorRepairPrompt,
+  createFallbackResponse,
+  parseRoomFlavorResponseText,
+  shouldAttemptRoomFlavorRepair,
+} from './utils.js';
 import { consoleLogger, type Logger } from '../utils/logger.js';
+import { E } from '../utils/fp.js';
 
 export interface AnthropicConfig {
   apiKey: string;
@@ -29,38 +36,65 @@ export function createAnthropicAdapter(config: AnthropicConfig): AIAdapter {
 
   return {
     async generateRoomFlavor(request: RoomFlavorRequest): Promise<RoomFlavorResponse> {
-      const userPrompt = buildRoomFlavorPrompt(request);
+      async function callClaude(prompt: string): Promise<string> {
+        const message = await client.messages.create({
+          model,
+          max_tokens: 1500,
+          messages: [
+            {
+              role: 'user',
+              content: prompt,
+            },
+          ],
+        });
 
-      const message = await client.messages.create({
-        model,
-        max_tokens: 1500,
-        messages: [
-          {
-            role: 'user',
-            content: userPrompt,
-          },
-        ],
-      });
+        const textBlock = message.content.find((block) => block.type === 'text');
+        if (!textBlock || textBlock.type !== 'text') {
+          throw new Error('No text response from Claude');
+        }
 
-      // Extract text content from response
-      const textBlock = message.content.find((block) => block.type === 'text');
-      if (!textBlock || textBlock.type !== 'text') {
-        throw new Error('No text response from Claude');
+        return textBlock.text;
       }
 
-      const content = textBlock.text;
+      const userPrompt = buildRoomFlavorPrompt(request);
+      const content = await callClaude(userPrompt);
 
       const parsedResponse = parseRoomFlavorResponseText(content, logger);
-      if (!parsedResponse.ok) {
-        logger.error('Claude response parse/validation failed:', {
-          code: parsedResponse.error.code,
-          message: parsedResponse.error.message,
-          context: parsedResponse.error.context,
+      if (E.isRight(parsedResponse)) return parsedResponse.right;
+
+      if (shouldAttemptRoomFlavorRepair(parsedResponse.left)) {
+        logger.warn('Claude response invalid; attempting one repair pass', {
+          code: parsedResponse.left.code,
+          message: parsedResponse.left.message,
         });
-        return createFallbackResponse(request);
+
+        try {
+          const repairPrompt = buildRoomFlavorRepairPrompt({
+            previousText: content,
+            error: parsedResponse.left,
+          });
+          const repairedContent = await callClaude(repairPrompt);
+          const repaired = parseRoomFlavorResponseText(repairedContent, logger);
+          if (E.isRight(repaired)) return repaired.right;
+
+          logger.error('Claude repair failed; falling back', {
+            code: repaired.left.code,
+            message: repaired.left.message,
+            context: repaired.left.context,
+          });
+          return createFallbackResponse(request);
+        } catch (cause) {
+          logger.error('Claude repair request failed; falling back', { cause });
+          return createFallbackResponse(request);
+        }
       }
 
-      return parsedResponse.value;
+      logger.error('Claude response parse/validation failed; falling back', {
+        code: parsedResponse.left.code,
+        message: parsedResponse.left.message,
+        context: parsedResponse.left.context,
+      });
+      return createFallbackResponse(request);
     },
   };
 }

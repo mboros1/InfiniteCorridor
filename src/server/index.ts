@@ -9,8 +9,8 @@ import type { GameState, WorldConfig, Monster } from '../domain/model.js';
 import { upsertEdges, upsertLevelState, upsertWorld, getWorldState } from '../db/worldRepo.js';
 import { serializeGameState } from '../db/serialization.js';
 import { APP_ERROR_CODE, appError, toAppError, type AppError } from '../errors/appError.js';
-import { err, fromPromise, ok, tryCatch, type AppAsync } from '../utils/appResult.js';
 import { RUNTIME_CONFIG } from '../config/runtime.js';
+import { E, O, TE, pipe } from '../utils/fp.js';
 import { z } from 'zod';
 
 // ---- Logging ----
@@ -84,11 +84,16 @@ function jsonResponse(body: unknown, init?: ResponseInit): Response {
   });
 }
 
+function newRequestId(): string {
+  return `req-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
 function newGameId(): string {
   return `game-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 function statusForAppError(error: AppError): number {
+  if (typeof error.status === 'number') return error.status;
   switch (error.code) {
     case APP_ERROR_CODE.BadRequest:
       return 400;
@@ -99,12 +104,14 @@ function statusForAppError(error: AppError): number {
   }
 }
 
-function errorResponse(error: AppError, init?: ResponseInit): Response {
+function errorResponse(requestId: string, error: AppError, init?: ResponseInit): Response {
   const status = statusForAppError(error);
+  const expose = error.expose ?? status < 500;
   const responseBody: Record<string, unknown> = {
     error: {
       code: error.code,
-      message: status === 500 ? 'Internal server error' : error.message,
+      message: expose ? error.message : 'Internal server error',
+      requestId,
     },
   };
 
@@ -115,75 +122,77 @@ function errorResponse(error: AppError, init?: ResponseInit): Response {
   return jsonResponse(responseBody, { ...init, status });
 }
 
-async function parseJsonBody<T>(req: Request, schema: z.ZodType<T>): AppAsync<T> {
-  const raw = await fromPromise(
-    req.json(),
-    (cause) =>
-      appError(APP_ERROR_CODE.BadRequest, 'Request body must be valid JSON', {
-        cause,
-      })
-  );
-  if (!raw.ok) return raw;
-
-  const parsed = schema.safeParse(raw.value);
-  if (!parsed.success) {
-    return err(
-      appError(APP_ERROR_CODE.BadRequest, 'Invalid request body', {
-        cause: parsed.error,
-        context: { validationErrors: parsed.error.format() },
-      })
-    );
-  }
-
-  return ok(parsed.data);
-}
-
-async function persistGameState(gameId: string, state: GameState): AppAsync<void> {
-  const stateJson = tryCatch(
-    () => serializeGameState(state),
-    (cause) =>
-      appError(APP_ERROR_CODE.DbSerializeFailed, 'Failed to serialize game state', {
-        cause,
-        context: { gameId },
-      })
-  );
-  if (!stateJson.ok) return stateJson;
-
-  const worldResult = await upsertWorld({
-    id: gameId,
-    themePrompt: state.worldConfig.themePrompt,
-    seed: state.worldConfig.seed,
-    difficulty: state.worldConfig.difficulty,
-    stateJson: stateJson.value,
-  });
-  if (!worldResult.ok) return worldResult;
-
-  const levelPromises = Object.values(state.world.levels).map((stored) =>
-    upsertLevelState(gameId, stored.coord, stored.level, {
-      tileFlavors: stored.tileFlavors,
-      enemyFlavors: stored.enemyFlavors,
-      roomDescription: stored.roomDescription,
+function parseJsonBody<T>(req: Request, schema: z.ZodType<T>): TE.TaskEither<AppError, T> {
+  return pipe(
+    TE.tryCatch(
+      () => req.json(),
+      (cause) =>
+        appError(APP_ERROR_CODE.BadRequest, 'Request body must be valid JSON', {
+          cause,
+        })
+    ),
+    TE.chain((raw) => {
+      const parsed = schema.safeParse(raw);
+      if (!parsed.success) {
+        return TE.left(
+          appError(APP_ERROR_CODE.BadRequest, 'Invalid request body', {
+            cause: parsed.error,
+            context: { validationErrors: parsed.error.format() },
+          })
+        );
+      }
+      return TE.right(parsed.data);
     })
   );
-
-  const edgePromise = upsertEdges(gameId, state.world.edges);
-  const results = await Promise.all([...levelPromises, edgePromise]);
-  for (const result of results) {
-    if (!result.ok) return result;
-  }
-
-  return ok(undefined);
 }
 
-async function loadGameState(gameId: string): AppAsync<GameState | null> {
-  const stateResult = await getWorldState(gameId);
-  if (!stateResult.ok) return stateResult;
+function persistGameState(gameId: string, state: GameState): TE.TaskEither<AppError, void> {
+  return pipe(
+    TE.fromEither(
+      E.tryCatch(
+        () => serializeGameState(state),
+        (cause) =>
+          appError(APP_ERROR_CODE.DbSerializeFailed, 'Failed to serialize game state', {
+            cause,
+            context: { gameId },
+          })
+      )
+    ),
+    TE.chain((stateJson) =>
+      pipe(
+        upsertWorld({
+          id: gameId,
+          themePrompt: state.worldConfig.themePrompt,
+          seed: state.worldConfig.seed,
+          difficulty: state.worldConfig.difficulty,
+          stateJson,
+        }),
+        TE.chain(() => {
+          const levelTasks = Object.values(state.world.levels).map((stored) =>
+            upsertLevelState(gameId, stored.coord, stored.level, {
+              tileFlavors: stored.tileFlavors,
+              enemyFlavors: stored.enemyFlavors,
+              roomDescription: stored.roomDescription,
+            })
+          );
 
-  const state = stateResult.value;
-  if (state) {
-    games.set(gameId, state);
-  }
-  return ok(state);
+          return pipe([...levelTasks, upsertEdges(gameId, state.world.edges)], TE.sequenceArray, TE.map(() => undefined));
+        })
+      )
+    )
+  );
+}
+
+function loadGameState(gameId: string): TE.TaskEither<AppError, O.Option<GameState>> {
+  return pipe(
+    getWorldState(gameId),
+    TE.map((state) => {
+      if (O.isSome(state)) {
+        games.set(gameId, state.value);
+      }
+      return state;
+    })
+  );
 }
 
 // Generate AI flavor for the current room
@@ -276,6 +285,7 @@ const server = Bun.serve({
   port: RUNTIME_CONFIG.port,
 
   async fetch(req: Request): Promise<Response> {
+    const requestId = newRequestId();
     const url = new URL(req.url);
 
     // CORS headers for local dev
@@ -283,10 +293,12 @@ const server = Bun.serve({
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Expose-Headers': 'X-Request-Id',
     };
+    const responseHeaders = mergeHeaders(corsHeaders, { 'X-Request-Id': requestId });
 
     if (req.method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: corsHeaders });
+      return new Response(null, { status: 204, headers: responseHeaders });
     }
 
     try {
@@ -299,7 +311,7 @@ const server = Bun.serve({
             aiAdapter: aiAdapterName,
             hasAiKey: !!(RUNTIME_CONFIG.anthropicApiKey || RUNTIME_CONFIG.openRouterApiKey),
           },
-          { headers: corsHeaders }
+          { headers: responseHeaders }
         );
       }
 
@@ -312,20 +324,21 @@ const server = Bun.serve({
           rulesVersion: z.string().min(1).optional(),
         });
 
-        const body = await parseJsonBody(req, StartRunBody);
-        if (!body.ok) return errorResponse(body.error, { headers: corsHeaders });
+        const bodyResult = await parseJsonBody(req, StartRunBody)();
+        if (E.isLeft(bodyResult)) return errorResponse(requestId, bodyResult.left, { headers: responseHeaders });
+        const body = bodyResult.right;
 
         log('HTTP', 'POST /api/start-run', {
-          theme: body.value.themePrompt.slice(0, 50),
-          seed: body.value.seed,
-          difficulty: body.value.difficulty,
+          theme: body.themePrompt.slice(0, 50),
+          seed: body.seed,
+          difficulty: body.difficulty,
         });
 
         const config: WorldConfig = {
-          themePrompt: body.value.themePrompt,
-          seed: body.value.seed,
-          difficulty: body.value.difficulty ?? 'Normal',
-          rulesVersion: body.value.rulesVersion ?? '0.1.0',
+          themePrompt: body.themePrompt,
+          seed: body.seed,
+          difficulty: body.difficulty ?? 'Normal',
+          rulesVersion: body.rulesVersion ?? '0.1.0',
         };
 
         log('DEBUG', 'Creating initial game state...');
@@ -342,18 +355,19 @@ const server = Bun.serve({
         state = await generateRoomFlavor(state);
 
         games.set(gameId, state);
-        const persisted = await persistGameState(gameId, state);
-        if (!persisted.ok) {
+        const persisted = await persistGameState(gameId, state)();
+        if (E.isLeft(persisted)) {
           log('DB', 'ERROR persisting new game', {
-            code: persisted.error.code,
-            message: persisted.error.message,
-            context: persisted.error.context,
+            requestId,
+            code: persisted.left.code,
+            message: persisted.left.message,
+            context: persisted.left.context,
           });
-          return errorResponse(persisted.error, { headers: corsHeaders });
+          return errorResponse(requestId, persisted.left, { headers: responseHeaders });
         }
 
         log('HTTP', `Game ${gameId} ready`);
-        return jsonResponse({ gameId, state }, { headers: corsHeaders });
+        return jsonResponse({ gameId, state }, { headers: responseHeaders });
       }
 
       // Execute a command
@@ -370,36 +384,43 @@ const server = Bun.serve({
           action: ActionSchema,
         });
 
-        const body = await parseJsonBody(req, CommandBody);
-        if (!body.ok) return errorResponse(body.error, { headers: corsHeaders });
+        const bodyResult = await parseJsonBody(req, CommandBody)();
+        if (E.isLeft(bodyResult)) return errorResponse(requestId, bodyResult.left, { headers: responseHeaders });
+        const body = bodyResult.right;
 
-        let state = games.get(body.value.gameId);
+        let state = games.get(body.gameId);
         if (!state) {
-          const loaded = await loadGameState(body.value.gameId);
-          if (!loaded.ok) return errorResponse(loaded.error, { headers: corsHeaders });
-          state = loaded.value ?? undefined;
+          const loaded = await loadGameState(body.gameId)();
+          if (E.isLeft(loaded)) return errorResponse(requestId, loaded.left, { headers: responseHeaders });
+          if (O.isSome(loaded.right)) state = loaded.right.value;
         }
 
         if (!state) {
-          log('HTTP', 'ERROR: Game not found');
-          return jsonResponse({ error: 'Game not found' }, { status: 404, headers: corsHeaders });
+          const notFound = appError(APP_ERROR_CODE.NotFound, 'Game not found', {
+            context: { gameId: body.gameId },
+          });
+          log('HTTP', 'ERROR: Game not found', { requestId, gameId: body.gameId.slice(-8) });
+          return errorResponse(requestId, notFound, { headers: responseHeaders });
         }
 
         const player = getPlayer(state);
         log('HTTP', 'POST /api/command', {
-          gameId: body.value.gameId.slice(-8),
-          action: body.value.action,
+          gameId: body.gameId.slice(-8),
+          action: body.action,
           playerPos: player ? `(${player.position.x},${player.position.y})` : 'unknown',
         });
         if (!player) {
-          log('HTTP', 'ERROR: Player not found');
-          return jsonResponse({ error: 'Player not found' }, { status: 400, headers: corsHeaders });
+          const missingPlayer = appError(APP_ERROR_CODE.Unknown, 'Player not found in game state', {
+            context: { gameId: body.gameId, playerId: state.playerId },
+          });
+          log('HTTP', 'ERROR: Player not found', { requestId, gameId: body.gameId.slice(-8), playerId: state.playerId });
+          return errorResponse(requestId, missingPlayer, { headers: responseHeaders });
         }
 
         let newState: GameState;
 
         // Handle Transition action specially to generate AI flavor for new levels
-        if (body.value.action.kind === 'Transition') {
+        if (body.action.kind === 'Transition') {
           const result = handleTransition(state);
           newState = result.state;
 
@@ -411,28 +432,29 @@ const server = Bun.serve({
             log('LEVEL', `Player returned to existing level: ${newState.world?.currentLevelId}`);
           }
         } else {
-          newState = applyAction(state, player.id, body.value.action);
+          newState = applyAction(state, player.id, body.action);
         }
 
-        games.set(body.value.gameId, newState);
-        const persisted = await persistGameState(body.value.gameId, newState);
-        if (!persisted.ok) {
+        games.set(body.gameId, newState);
+        const persisted = await persistGameState(body.gameId, newState)();
+        if (E.isLeft(persisted)) {
           log('DB', 'ERROR persisting game state', {
-            gameId: body.value.gameId.slice(-8),
-            code: persisted.error.code,
-            message: persisted.error.message,
-            context: persisted.error.context,
+            requestId,
+            gameId: body.gameId.slice(-8),
+            code: persisted.left.code,
+            message: persisted.left.message,
+            context: persisted.left.context,
           });
-          return errorResponse(persisted.error, { headers: corsHeaders });
+          return errorResponse(requestId, persisted.left, { headers: responseHeaders });
         }
 
         // Log movement result
         const newPlayer = getPlayer(newState);
-        if (body.value.action.kind === 'Move' && newPlayer) {
+        if (body.action.kind === 'Move' && newPlayer) {
           const moved = newPlayer.position.x !== player.position.x || newPlayer.position.y !== player.position.y;
           log('MOVE', moved
             ? `Moved to (${newPlayer.position.x},${newPlayer.position.y})`
-            : `Blocked at (${player.position.x},${player.position.y}) trying to move ${body.value.action.direction}`);
+            : `Blocked at (${player.position.x},${player.position.y}) trying to move ${body.action.direction}`);
         }
 
         // Log combat events
@@ -460,7 +482,7 @@ const server = Bun.serve({
           log('GAME', 'Player died - game over');
         }
 
-        return jsonResponse({ state: newState, gameStatus }, { headers: corsHeaders });
+        return jsonResponse({ state: newState, gameStatus }, { headers: responseHeaders });
       }
 
       // Get current state
@@ -470,21 +492,27 @@ const server = Bun.serve({
 
         let state = games.get(gameId);
         if (!state) {
-          const loaded = await loadGameState(gameId);
-          if (!loaded.ok) return errorResponse(loaded.error, { headers: corsHeaders });
-          state = loaded.value ?? undefined;
+          const loaded = await loadGameState(gameId)();
+          if (E.isLeft(loaded)) return errorResponse(requestId, loaded.left, { headers: responseHeaders });
+          if (O.isSome(loaded.right)) state = loaded.right.value;
         }
 
         if (!state) {
-          log('HTTP', 'ERROR: Game not found');
-          return jsonResponse({ error: 'Game not found' }, { status: 404, headers: corsHeaders });
+          const notFound = appError(APP_ERROR_CODE.NotFound, 'Game not found', {
+            context: { gameId },
+          });
+          log('HTTP', 'ERROR: Game not found', { requestId, gameId: gameId.slice(-8) });
+          return errorResponse(requestId, notFound, { headers: responseHeaders });
         }
 
-        return jsonResponse({ state }, { headers: corsHeaders });
+        return jsonResponse({ state }, { headers: responseHeaders });
       }
 
       log('HTTP', `404 ${req.method} ${url.pathname}`);
-      return new Response('Not found', { status: 404, headers: corsHeaders });
+      const notFound = appError(APP_ERROR_CODE.NotFound, 'Not found', {
+        context: { method: req.method, pathname: url.pathname },
+      });
+      return errorResponse(requestId, notFound, { headers: responseHeaders });
     } catch (cause) {
       const appErr = toAppError(cause, {
         code: APP_ERROR_CODE.Unknown,
@@ -493,12 +521,13 @@ const server = Bun.serve({
       });
 
       log('HTTP', 'Unhandled error', {
+        requestId,
         code: appErr.code,
         message: appErr.message,
         context: appErr.context,
       });
 
-      return errorResponse(appErr, { headers: corsHeaders });
+      return errorResponse(requestId, appErr, { headers: responseHeaders });
     }
   },
 });

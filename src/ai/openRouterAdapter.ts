@@ -1,7 +1,14 @@
 import { OpenRouter } from '@openrouter/sdk';
 import type { AIAdapter, RoomFlavorRequest, RoomFlavorResponse } from './contracts.js';
-import { buildRoomFlavorPrompt, createFallbackResponse, parseRoomFlavorResponseText } from './utils.js';
+import {
+  buildRoomFlavorPrompt,
+  buildRoomFlavorRepairPrompt,
+  createFallbackResponse,
+  parseRoomFlavorResponseText,
+  shouldAttemptRoomFlavorRepair,
+} from './utils.js';
 import { consoleLogger, type Logger } from '../utils/logger.js';
+import { E } from '../utils/fp.js';
 
 export interface OpenRouterConfig {
   apiKey: string;
@@ -23,41 +30,68 @@ export function createOpenRouterAdapter(config: OpenRouterConfig): AIAdapter {
 
   return {
     async generateRoomFlavor(request: RoomFlavorRequest): Promise<RoomFlavorResponse> {
-      const prompt = buildRoomFlavorPrompt(request);
+      async function callOpenRouter(prompt: string): Promise<string> {
+        const completion = await client.chat.send({
+          model,
+          messages: [
+            {
+              role: 'user',
+              content: prompt,
+            },
+          ],
+          stream: false,
+          maxTokens: 1500,
+        });
 
-      const completion = await client.chat.send({
-        model,
-        messages: [
-          {
-            role: 'user',
-            content: prompt,
-          },
-        ],
-        stream: false,
-        maxTokens: 1500,
-      });
+        const rawContent = completion.choices?.[0]?.message?.content;
+        if (!rawContent) {
+          throw new Error('No response from AI');
+        }
 
-      const rawContent = completion.choices?.[0]?.message?.content;
-      if (!rawContent) {
-        throw new Error('No response from AI');
+        return typeof rawContent === 'string'
+          ? rawContent
+          : rawContent.map((part) => ('text' in part ? part.text : '')).join('');
       }
 
-      // Handle array content (multi-part responses)
-      const content = typeof rawContent === 'string'
-        ? rawContent
-        : rawContent.map((part) => ('text' in part ? part.text : '')).join('');
+      const prompt = buildRoomFlavorPrompt(request);
+      const content = await callOpenRouter(prompt);
 
       const parsedResponse = parseRoomFlavorResponseText(content, logger);
-      if (!parsedResponse.ok) {
-        logger.error('AI response parse/validation failed:', {
-          code: parsedResponse.error.code,
-          message: parsedResponse.error.message,
-          context: parsedResponse.error.context,
+      if (E.isRight(parsedResponse)) return parsedResponse.right;
+
+      if (shouldAttemptRoomFlavorRepair(parsedResponse.left)) {
+        logger.warn('OpenRouter response invalid; attempting one repair pass', {
+          code: parsedResponse.left.code,
+          message: parsedResponse.left.message,
         });
-        return createFallbackResponse(request);
+
+        try {
+          const repairPrompt = buildRoomFlavorRepairPrompt({
+            previousText: content,
+            error: parsedResponse.left,
+          });
+          const repairedContent = await callOpenRouter(repairPrompt);
+          const repaired = parseRoomFlavorResponseText(repairedContent, logger);
+          if (E.isRight(repaired)) return repaired.right;
+
+          logger.error('OpenRouter repair failed; falling back', {
+            code: repaired.left.code,
+            message: repaired.left.message,
+            context: repaired.left.context,
+          });
+          return createFallbackResponse(request);
+        } catch (cause) {
+          logger.error('OpenRouter repair request failed; falling back', { cause });
+          return createFallbackResponse(request);
+        }
       }
 
-      return parsedResponse.value;
+      logger.error('AI response parse/validation failed; falling back', {
+        code: parsedResponse.left.code,
+        message: parsedResponse.left.message,
+        context: parsedResponse.left.context,
+      });
+      return createFallbackResponse(request);
     },
   };
 }

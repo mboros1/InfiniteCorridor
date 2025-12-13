@@ -8,7 +8,7 @@ This branch focuses on:
 - Eliminating duplication in AI adapters.
 - Pushing more behavior into testable, pure-ish utilities (dependency injection for side effects).
 - Making persistence safer by validating/normalizing data before it hits the DB.
-- Introducing a minimal `AppError` + `AppResult` style and using it at one boundary (AI response parsing).
+- Codifying an error/optional policy using fp-ts `Option` + `Either`/`TaskEither` (no “expected failure” throws).
 - Reducing noisy engine debug logging (gated behind `IC_DEBUG`).
 - Centralizing runtime env config (`RUNTIME_CONFIG`) for server/DB.
 
@@ -17,8 +17,12 @@ Validation:
 - `bun test`
 
 Files changed vs `trunk`:
+- `README.md`
+- `TODO.md`
+- `PROJECT_DIRECTION.md`
 - `package.json`
 - `CODE_IMPROVEMENTS.md`
+- `ERROR_POLICY.md`
 - `src/ai/utils.ts`
 - `src/ai/anthropicAdapter.ts`
 - `src/ai/openRouterAdapter.ts`
@@ -27,7 +31,8 @@ Files changed vs `trunk`:
 - `src/engine/game.ts`
 - `src/engine/levelgen.ts`
 - `src/utils/logger.ts`
-- `src/utils/appResult.ts`
+- `src/utils/fp.ts`
+- `src/utils/appResult.ts` (removed)
 - `src/utils/debug.ts`
 - `src/errors/appError.ts`
 - `src/db/serialization.ts`
@@ -45,11 +50,11 @@ Files changed vs `trunk`:
 | 1 | DRY violations in AI adapters | ✅ Done | Shared utilities in `src/ai/utils.ts` |
 | 2 | Improve functional purity | ⚠️ Partial | AI uses injected logging; engine debug logs are gated; server still has `console.log` |
 | 3 | Enhance type safety in serialization | ✅ Done | Stronger Zod schemas + pre-serialization validation |
-| 4 | Improve error handling | ⚠️ Partial | `AppError` exists + server/DB boundaries use it; still not uniform across engine/client |
+| 4 | Improve error handling | ⚠️ Partial | `AppError` + fp-ts policy landed; AI/DB/server boundaries migrated; client still throws |
 | 5 | Functional state management | ⏳ Not started | No state update refactors yet |
 | 6 | Module organization | ⏳ Not started | No major splits (e.g. `engine/game.ts`) yet |
-| 7 | Type safety in database layer | ⚠️ Partial | DB repo returns `AppResult` and validates (still no migrations/backcompat layer) |
-| 8 | Functional error handling (Result/Either) | ⚠️ Partial | Used in AI parsing + server request parsing + DB repo boundaries |
+| 7 | Type safety in database layer | ⚠️ Partial | DB repo returns `TaskEither` and validates (still no migrations/backcompat layer) |
+| 8 | Functional error handling (Result/Either) | ⚠️ Partial | fp-ts `Either/TaskEither` used in AI parsing + server + DB; client not migrated yet |
 | 9 | Configuration system | ⚠️ Partial | Added `RUNTIME_CONFIG`; gameplay config remains in `src/config/index.ts` |
 | 10 | Testing infrastructure | ✅ Improved | Added targeted tests; no shared harness/helpers yet |
 
@@ -71,8 +76,9 @@ Files changed vs `trunk`:
   - `buildRoomFlavorPrompt(request)`:
     - Centralizes the shared prompt text (previously duplicated across adapters).
   - `parseRoomFlavorResponseText(content, logger)`:
-    - One concrete boundary that returns `AppResult<RoomFlavorResponse>` instead of throwing.
+    - One concrete boundary that returns `Either<AppError, RoomFlavorResponse>` instead of throwing.
     - Handles fenced JSON and a minimal truncation-repair strategy.
+    - Enforces “display-safe” text (single-line, no control chars, tile `char` must be single-column).
 - Removed duplicate code from:
   - `src/ai/anthropicAdapter.ts`
   - `src/ai/openRouterAdapter.ts`
@@ -81,7 +87,8 @@ Files changed vs `trunk`:
 - Each adapter:
   - Calls the provider API to get raw text.
   - Uses `parseRoomFlavorResponseText()` to parse/validate.
-  - Logs the error (with an error code) and falls back via `createFallbackResponse()` if parsing/validation fails.
+  - If parse/validation fails, attempts one “repair pass” (send issues + prior JSON back to the provider) and re-parses.
+  - Falls back via `createFallbackResponse()` if repair also fails.
 
 **Tests**
 - `src/ai/__tests__/utils.test.ts` covers:
@@ -90,7 +97,7 @@ Files changed vs `trunk`:
   - boundary behavior + error codes for parse/invalid/empty
 
 **Still open**
-- Decide whether “truncation repair” should be more conservative (current strategy is intentionally minimal).
+- Decide whether “truncation repair” and the single repair pass should be more conservative (both are intentionally minimal).
 
 ### 2) Improve functional purity ⚠️ (partial)
 
@@ -151,25 +158,29 @@ Files changed vs `trunk`:
 - Consistent error shapes + consistent boundary behavior (log + recover vs log + fail fast).
 
 **Implemented (this branch)**
-- Introduced minimal `AppError`:
-  - `src/errors/appError.ts` defines `APP_ERROR_CODE` and `appError()`.
-- Introduced minimal `AppResult` / `AppAsync` helpers:
-  - `src/utils/appResult.ts` defines `ok`, `err`, `tryCatch`, `fromPromise`, etc.
-- Implemented one concrete boundary in this style:
-  - `parseRoomFlavorResponseText()` in `src/ai/utils.ts` returns `AppResult<RoomFlavorResponse>` with codes like:
-    - `AI_RESPONSE_EMPTY`
-    - `AI_RESPONSE_PARSE_FAILED`
-    - `AI_RESPONSE_INVALID`
-- Adapters log the error code + context and fall back safely.
-- Server wraps request parsing + persistence in `AppResult` and converts to HTTP responses:
-  - `parseJsonBody()` + `errorResponse()` in `src/server/index.ts`
-  - top-level try/catch converts unknown throws via `toAppError()`
-- DB layer returns `AppResult` instead of throwing:
-  - `src/db/worldRepo.ts` catches query/serialize/deserialize failures and returns typed errors (`DB_*` codes)
+- Introduced minimal `AppError` and code registry:
+  - `src/errors/appError.ts` defines `APP_ERROR_CODE`, `appError()`, and `toAppError()` for unknown throws.
+- Added an explicit error/optional policy doc:
+  - `ERROR_POLICY.md` defines:
+    - when to use `Option` vs `Either`/`TaskEither`
+    - “log once at boundary”
+    - public HTTP error shape + code→status mapping guidance
+- Added fp-ts convenience re-exports:
+  - `src/utils/fp.ts` re-exports `pipe/flow` and `E/O/TE`.
+- AI boundary returns a typed error instead of throwing:
+  - `parseRoomFlavorResponseText()` in `src/ai/utils.ts` returns `Either<AppError, RoomFlavorResponse>`
+  - adapters log + safely fall back
+- Server enforces a stable public error shape + request correlation:
+  - `src/server/index.ts` returns `{ error: { code, message, requestId, details? } }` for all non-2xx
+  - adds `X-Request-Id` response header
+  - wraps throw-y request parsing with `TaskEither.tryCatch`
+- DB repo functions return `TaskEither<AppError, ...>`:
+  - query and (de)serialization failures become `DB_*` errors
+  - missing rows are represented as `Option.none` (not `null`)
 
 **Still open**
 - Decide on a project-wide policy:
-  - which layers return `AppResult` vs throw
+  - whether client should also adopt `TaskEither` + parse the public error shape (recommended)
   - how server maps errors to HTTP status codes + response bodies
 - Consider adding “public vs private” error messages consistently (what gets returned to clients vs only logged).
 
@@ -208,8 +219,9 @@ Files changed vs `trunk`:
 - Stronger guarantees at the DB boundary beyond serialization.
 
 **Implemented (this branch)**
-- DB repo functions now return `AppResult` and never throw:
+- DB repo functions now return `TaskEither<AppError, …>` and never throw for expected failures:
   - `src/db/worldRepo.ts` catches query/serialize/deserialize failures and returns typed errors
+  - missing rows are represented as `Option.none` (not `null`)
 - DB path is centralized via `RUNTIME_CONFIG`:
   - `src/db/client.ts` reads `RUNTIME_CONFIG.worldDbPath`
 
@@ -223,17 +235,20 @@ Files changed vs `trunk`:
 - Make expected failures explicit in the type system instead of exceptions.
 
 **Implemented (this branch)**
-- Minimal `AppResult` / `AppAsync` layer exists (`src/utils/appResult.ts`).
-- Used at multiple boundaries:
-  - `parseRoomFlavorResponseText()` in `src/ai/utils.ts`
-  - request parsing / persistence in `src/server/index.ts`
-  - DB repo functions in `src/db/worldRepo.ts`
+- Adopted fp-ts “Result/Either” style:
+  - Optional: `Option<A>`
+  - Sync failures: `Either<AppError, A>`
+  - Async failures: `TaskEither<AppError, A>`
+- Implemented at concrete boundaries:
+  - AI parsing: `src/ai/utils.ts`
+  - DB repo: `src/db/worldRepo.ts`
+  - HTTP request parsing + persistence: `src/server/index.ts`
 
 **Still open**
 - Apply the pattern to additional boundaries:
   - gameplay config parsing (`src/config/index.ts`) and any CLI/env parsing
   - client-side API error handling (consistent error shape)
-- Decide whether to stick with the in-house minimal layer or switch to a library (e.g. `neverthrow`) once the pattern stabilizes.
+- Decide whether to keep fp-ts “surface area” minimal (recommended: use `src/utils/fp.ts` as the import entrypoint everywhere).
 
 ### 9) Enhance configuration system ⚠️ (partial)
 
@@ -268,5 +283,5 @@ Files changed vs `trunk`:
 ## Suggested Next Steps (highest leverage)
 
 1. Update this document’s status table as new areas land (especially #4/#8).
-2. Decide and codify an error policy (what returns `AppResult` vs what throws).
+2. Migrate the client API wrapper to parse `{ error: { code, message, requestId, details? } }` and return `TaskEither`.
 3. Start the “module split” (#6) once engine behavior is stable.

@@ -18,6 +18,17 @@ const RuntimeConfigSchema = z.object({
     z.number().int().positive().default(3000)
   ),
 
+  tickMs: z.preprocess(
+    (value) => {
+      if (typeof value !== 'string') return undefined;
+      const trimmed = value.trim();
+      if (!trimmed) return undefined;
+      const n = Number(trimmed);
+      return Number.isFinite(n) ? n : value;
+    },
+    z.number().int().positive().default(200)
+  ),
+
   worldDbPath: z.preprocess(
     (value) => nonEmptyString(typeof value === 'string' ? value : undefined),
     z.string().min(1).default('world.db')
@@ -37,6 +48,7 @@ export type RuntimeConfig = z.infer<typeof RuntimeConfigSchema>;
 export function loadRuntimeConfig(env = process.env): RuntimeConfig {
   const parsed = RuntimeConfigSchema.safeParse({
     port: env.PORT,
+    tickMs: env.TICK_MS,
     worldDbPath: env.WORLD_DB_PATH,
     anthropicApiKey: env.ANTHROPIC_API_KEY,
     anthropicModel: env.ANTHROPIC_MODEL,
@@ -57,4 +69,3 @@ export function loadRuntimeConfig(env = process.env): RuntimeConfig {
 }
 
 export const RUNTIME_CONFIG = loadRuntimeConfig();
-
