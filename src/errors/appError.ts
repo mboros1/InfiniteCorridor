@@ -4,6 +4,8 @@ export const APP_ERROR_CODE = {
   BadRequest: 'BAD_REQUEST',
   NotFound: 'NOT_FOUND',
 
+  AlreadyLoggedIn: 'ALREADY_LOGGED_IN',
+
   AiResponseEmpty: 'AI_RESPONSE_EMPTY',
   AiResponseParseFailed: 'AI_RESPONSE_PARSE_FAILED',
   AiResponseInvalid: 'AI_RESPONSE_INVALID',

@@ -7,8 +7,11 @@ import {
   normalizeAiResponse,
   createFallbackResponse,
   RoomFlavorResponseSchema,
+  parsePlayerProfileResponseText,
   parseRoomFlavorResponseText,
+  buildPlayerProfileRepairPrompt,
   buildRoomFlavorRepairPrompt,
+  shouldAttemptPlayerProfileRepair,
   shouldAttemptRoomFlavorRepair,
 } from '../utils.js';
 import { nullLogger } from '../../utils/logger.js';
@@ -421,6 +424,98 @@ describe('AI Utilities', () => {
       expect(prompt).toContain(parsed.left.message);
       expect(prompt).toContain('Previous JSON:');
       expect(prompt).toContain('not json');
+    });
+  });
+
+  describe('player profile boundary', () => {
+    test('parses valid JSON profile', () => {
+      const content = JSON.stringify({
+        name: 'Ash',
+        description: 'A quiet wanderer with a silver compass.',
+        tokenChar: '&',
+        tokenColor: '#00ff00',
+      });
+
+      const result = parsePlayerProfileResponseText(content);
+      expect(E.isRight(result)).toBeTrue();
+      if (E.isLeft(result)) throw new Error('Expected right result');
+      expect(result.right.name).toBe('Ash');
+      expect(result.right.tokenChar).toBe('&');
+    });
+
+    test('accepts token.char shorthand via normalization', () => {
+      const content = JSON.stringify({
+        name: 'Ash',
+        description: 'A quiet wanderer.',
+        token: { char: '§', color: '#00ff00' },
+      });
+
+      const result = parsePlayerProfileResponseText(content);
+      expect(E.isRight(result)).toBeTrue();
+      if (E.isLeft(result)) throw new Error('Expected right result');
+      expect(result.right.tokenChar).toBe('§');
+    });
+
+    test('rejects multi-column/emoji tokenChar', () => {
+      const content = JSON.stringify({
+        name: 'Ash',
+        description: 'A quiet wanderer.',
+        tokenChar: '😀',
+        tokenColor: '#00ff00',
+      });
+
+      const result = parsePlayerProfileResponseText(content);
+      expect(E.isLeft(result)).toBeTrue();
+      if (E.isRight(result)) throw new Error('Expected left result');
+      expect(result.left.code).toBe(APP_ERROR_CODE.AiResponseInvalid);
+    });
+
+    test('rejects multi-line fields', () => {
+      const content = JSON.stringify({
+        name: 'Line 1\nLine 2',
+        description: 'ok',
+        tokenChar: '@',
+        tokenColor: '#00ff00',
+      });
+
+      const result = parsePlayerProfileResponseText(content);
+      expect(E.isLeft(result)).toBeTrue();
+      if (E.isRight(result)) throw new Error('Expected left result');
+      expect(result.left.code).toBe(APP_ERROR_CODE.AiResponseInvalid);
+    });
+
+    test('returns empty error code on blank content', () => {
+      const result = parsePlayerProfileResponseText('   ');
+      expect(E.isLeft(result)).toBeTrue();
+      if (E.isRight(result)) throw new Error('Expected left result');
+      expect(result.left.code).toBe(APP_ERROR_CODE.AiResponseEmpty);
+    });
+
+    test('shouldAttemptPlayerProfileRepair is true only for parse/invalid', () => {
+      expect(shouldAttemptPlayerProfileRepair(appError(APP_ERROR_CODE.AiResponseParseFailed, 'x'))).toBeTrue();
+      expect(shouldAttemptPlayerProfileRepair(appError(APP_ERROR_CODE.AiResponseInvalid, 'x'))).toBeTrue();
+      expect(shouldAttemptPlayerProfileRepair(appError(APP_ERROR_CODE.AiResponseEmpty, 'x'))).toBeFalse();
+      expect(shouldAttemptPlayerProfileRepair(appError(APP_ERROR_CODE.Unknown, 'x'))).toBeFalse();
+    });
+
+    test('buildPlayerProfileRepairPrompt includes validation issue paths when available', () => {
+      const previousText = JSON.stringify({
+        name: 'Ash',
+        description: 'A quiet wanderer.',
+        tokenChar: '😀',
+        tokenColor: '#00ff00',
+      });
+
+      const parsed = parsePlayerProfileResponseText(previousText);
+      expect(E.isLeft(parsed)).toBeTrue();
+      if (E.isRight(parsed)) throw new Error('Expected left result');
+      expect(parsed.left.code).toBe(APP_ERROR_CODE.AiResponseInvalid);
+
+      const prompt = buildPlayerProfileRepairPrompt({ previousText, error: parsed.left });
+      expect(prompt).toContain('Validation issues:');
+      expect(prompt).toContain('tokenChar');
+      expect(prompt).toContain('Previous JSON:');
+      expect(prompt).toContain('"tokenChar":"😀"');
     });
   });
 });

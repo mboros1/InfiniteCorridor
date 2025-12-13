@@ -1,19 +1,32 @@
-import { createInitialGameState, applyAction, getPlayer, handleTransition } from '../engine/game.js';
+import type { ServerWebSocket } from 'bun';
+import { createInitialGameState, applyAction, getPlayerById, handleTransition } from '../engine/game.js';
 import { getTemplatesForMonsters } from '../engine/templates.js';
-import { getUniqueTileTypes } from '../engine/levelgen.js';
+import { getDefaultLevelConfig, getUniqueTileTypes } from '../engine/levelgen.js';
 import { createAnthropicAdapter, createMockAdapter } from '../ai/anthropicAdapter.js';
 import { createOpenRouterAdapter } from '../ai/openRouterAdapter.js';
-import type { AIAdapter, RoomFlavorRequest } from '../ai/contracts.js';
+import type { AIAdapter, PlayerProfileResponse, RoomFlavorRequest } from '../ai/contracts.js';
+import { createFallbackPlayerProfile } from '../ai/utils.js';
 import { consoleLogger } from '../utils/logger.js';
-import type { GameState, WorldConfig, Monster } from '../domain/model.js';
+import type { GameState, WorldConfig, Monster, Player, StoredLevel } from '../domain/model.js';
 import { upsertEdges, upsertLevelState, upsertWorld, getWorldState } from '../db/worldRepo.js';
 import { serializeGameState } from '../db/serialization.js';
+import {
+  getPlayerProfile,
+  listPlayers as listPlayerProfiles,
+  listWorlds,
+  listWorldsForPlayer,
+  touchWorldPlayer,
+  upsertPlayerProfile,
+} from '../db/playerRepo.js';
 import { APP_ERROR_CODE, appError, toAppError, type AppError } from '../errors/appError.js';
 import { RUNTIME_CONFIG } from '../config/runtime.js';
 import { E, O, TE, pipe } from '../utils/fp.js';
-import { applyCommand } from './commands.js';
+import { applyCommandForActor } from './commands.js';
 import { ensurePlayerInGame } from './players.js';
+import type { PlayerProfilePublic, PublicError } from '../protocol/ws.js';
 import { z } from 'zod';
+import { createWsHub, type WsData } from './wsHub.js';
+import { initializeMonsterSpawns } from '../engine/monsterSpawns.js';
 
 // ---- Logging ----
 
@@ -28,6 +41,20 @@ function log(category: string, message: string, data?: unknown): void {
   } else {
     console.log(prefix, message);
   }
+}
+
+function logLevelConfiguration(state: GameState, context: string): void {
+  const level = state.currentLevel;
+  const levelConfig = getDefaultLevelConfig(level.depth, state.worldConfig.difficulty);
+  log('LEVEL', `Loaded level (${context})`, {
+    gameId: state.world.currentLevelId,
+    depth: level.depth,
+    size: `${level.width}x${level.height}`,
+    difficulty: state.worldConfig.difficulty,
+    clearingCount: levelConfig.clearingCount,
+    enemyDensity: levelConfig.enemyDensity,
+    theme: state.worldConfig.themePrompt.slice(0, 60),
+  });
 }
 
 function mergeHeaders(...headersList: Array<HeadersInit | undefined>): Headers {
@@ -101,6 +128,8 @@ function statusForAppError(error: AppError): number {
       return 400;
     case APP_ERROR_CODE.NotFound:
       return 404;
+    case APP_ERROR_CODE.AlreadyLoggedIn:
+      return 409;
     default:
       return 500;
   }
@@ -122,6 +151,22 @@ function errorResponse(requestId: string, error: AppError, init?: ResponseInit):
   }
 
   return jsonResponse(responseBody, { ...init, status });
+}
+
+function publicErrorBody(requestId: string, error: AppError): PublicError {
+  const status = statusForAppError(error);
+  const expose = error.expose ?? status < 500;
+  const body: PublicError = {
+    code: error.code,
+    message: expose ? error.message : 'Internal server error',
+    requestId,
+  };
+
+  if (error.code === APP_ERROR_CODE.BadRequest && error.context?.validationErrors) {
+    body.details = error.context.validationErrors;
+  }
+
+  return body;
 }
 
 function parseJsonBody<T>(req: Request, schema: z.ZodType<T>): TE.TaskEither<AppError, T> {
@@ -178,7 +223,12 @@ function persistGameState(gameId: string, state: GameState): TE.TaskEither<AppEr
             })
           );
 
-          return pipe([...levelTasks, upsertEdges(gameId, state.world.edges)], TE.sequenceArray, TE.map(() => undefined));
+          const knownLevelIds = new Set(Object.keys(state.world.levels));
+          const edgesToPersist = state.world.edges.filter(
+            (edge) => knownLevelIds.has(edge.fromLevelId) && knownLevelIds.has(edge.toLevelId)
+          );
+
+          return pipe([...levelTasks, upsertEdges(gameId, edgesToPersist)], TE.sequenceArray, TE.map(() => undefined));
         })
       )
     )
@@ -190,15 +240,143 @@ function loadGameState(gameId: string): TE.TaskEither<AppError, O.Option<GameSta
     getWorldState(gameId),
     TE.map((state) => {
       if (O.isSome(state)) {
-        games.set(gameId, state.value);
+        const restored = ensureMonsterSpawns(state.value);
+        games.set(gameId, restored);
+        logLevelConfiguration(restored, 'loadGameState');
+        return O.some(restored);
       }
       return state;
     })
   );
 }
 
+function ensureMonsterSpawns(state: GameState): GameState {
+  let currentLevel = state.currentLevel;
+  if (!currentLevel.monsterSpawns) {
+    currentLevel = initializeMonsterSpawns(currentLevel, state.turn);
+  }
+
+  let worldLevelsChanged = false;
+  const updatedLevels: Record<string, StoredLevel> = {};
+  for (const [levelId, stored] of Object.entries(state.world.levels)) {
+    const levelState = stored.level;
+    if (levelState.monsterSpawns) {
+      updatedLevels[levelId] = stored;
+      continue;
+    }
+    const withSpawns = initializeMonsterSpawns(levelState, state.turn);
+    updatedLevels[levelId] = { ...stored, level: withSpawns };
+    worldLevelsChanged = true;
+    if (levelId === state.world.currentLevelId) {
+      currentLevel = withSpawns;
+    }
+  }
+
+  if (!worldLevelsChanged && currentLevel === state.currentLevel) {
+    return state;
+  }
+
+  return {
+    ...state,
+    currentLevel,
+    world: {
+      ...state.world,
+      levels: worldLevelsChanged ? updatedLevels : state.world.levels,
+    },
+  };
+}
+
+function toPlayerProfilePublic(profile: {
+  playerId: string;
+  name: string;
+  description: string;
+  tokenChar: string;
+  tokenColor?: string;
+}): PlayerProfilePublic {
+  return {
+    playerId: profile.playerId,
+    name: profile.name,
+    description: profile.description,
+    tokenChar: profile.tokenChar,
+    tokenColor: profile.tokenColor,
+  };
+}
+
+function sanitizePlayerName(name?: string): string | undefined {
+  const trimmed = name?.trim();
+  if (!trimmed) return undefined;
+  return trimmed.slice(0, 50);
+}
+
+function makeFallbackProfile(playerId: string, playerName?: string): PlayerProfilePublic {
+  const name = sanitizePlayerName(playerName) ?? `Wanderer-${playerId.slice(0, 6)}`;
+  return {
+    playerId,
+    name,
+    description: 'A traveler of the infinite corridor.',
+    tokenChar: '@',
+    tokenColor: '#00ff00',
+  };
+}
+
+function getOrCreatePlayerProfilePublic(params: {
+  playerId: string;
+  playerName?: string;
+}): TE.TaskEither<AppError, PlayerProfilePublic> {
+  return pipe(
+    getPlayerProfile(params.playerId),
+    TE.chain((maybe) => {
+      if (O.isSome(maybe)) return TE.right(toPlayerProfilePublic(maybe.value));
+      const fallback = makeFallbackProfile(params.playerId, params.playerName);
+      return upsertPlayerProfile({
+        playerId: fallback.playerId,
+        prompt: null,
+        name: fallback.name,
+        description: fallback.description,
+        tokenChar: fallback.tokenChar,
+        tokenColor: fallback.tokenColor,
+      });
+    })
+  );
+}
+
+function createPlayerProfileFromPrompt(
+  params: { playerId?: string; prompt: string },
+  adapter: AIAdapter = aiAdapter
+): TE.TaskEither<AppError, PlayerProfilePublic> {
+  const playerId = params.playerId ?? crypto.randomUUID();
+
+  return pipe(
+    TE.tryCatch(
+      async () => {
+        const profile: PlayerProfileResponse = await adapter.generatePlayerProfile({ prompt: params.prompt });
+        return profile;
+      },
+      (cause) =>
+        appError(APP_ERROR_CODE.Unknown, 'Failed to generate player profile', {
+          cause,
+          context: { playerId },
+        })
+    ),
+    TE.orElse((err) => {
+      log('AI', 'Player profile generation failed; using fallback', { code: err.code, message: err.message });
+      return TE.right(createFallbackPlayerProfile({ prompt: params.prompt }));
+    }),
+    TE.chain((profile) =>
+      upsertPlayerProfile({
+        playerId,
+        prompt: params.prompt,
+        name: profile.name,
+        description: profile.description,
+        tokenChar: profile.tokenChar,
+        tokenColor: profile.tokenColor,
+      })
+    )
+  );
+}
+
 // Generate AI flavor for the current room
-async function generateRoomFlavor(state: GameState): Promise<GameState> {
+async function generateRoomFlavor(state: GameState, adapter: AIAdapter = aiAdapter): Promise<GameState> {
   const level = state.currentLevel;
   const monsters = level.entities.filter((e): e is Monster => e.kind === 'Monster');
   const templateIds = monsters.map((m) => m.templateId);
@@ -239,7 +417,7 @@ async function generateRoomFlavor(state: GameState): Promise<GameState> {
   const startTime = Date.now();
 
   try {
-    const response = await aiAdapter.generateRoomFlavor(request);
+    const response = await adapter.generateRoomFlavor(request);
     const elapsed = Date.now() - startTime;
 
     log('AI', `Response received (${elapsed}ms)`, {
@@ -283,10 +461,55 @@ async function generateRoomFlavor(state: GameState): Promise<GameState> {
   }
 }
 
-const server = Bun.serve({
-  port: RUNTIME_CONFIG.port,
+export function createServer(options?: { port?: number; startTickTimers?: boolean; useMockAi?: boolean }) {
+  const serverAiAdapter = options?.useMockAi ? createMockAdapter() : aiAdapter;
+  const serverAiAdapterName = options?.useMockAi ? 'Mock' : aiAdapterName;
 
-  async fetch(req: Request): Promise<Response> {
+  const wsHub = createWsHub({
+    newRequestId,
+    newGameId,
+    tickMs: RUNTIME_CONFIG.tickMs,
+    startTickTimers: options?.startTickTimers,
+    getGame: (gameId) => games.get(gameId),
+    setGame: (gameId, state) => {
+      games.set(gameId, state);
+    },
+    loadGameState,
+    persistGameState,
+    generateRoomFlavor: (state) => generateRoomFlavor(state, serverAiAdapter),
+    listPlayers: (limit) => listPlayerProfiles({ limit }),
+    getPlayerProfile: (playerId) =>
+      pipe(
+        getPlayerProfile(playerId),
+        TE.map((maybe) => (O.isSome(maybe) ? O.some(toPlayerProfilePublic(maybe.value)) : O.none))
+      ),
+    getOrCreatePlayerProfile: (params) => getOrCreatePlayerProfilePublic(params),
+    createPlayerProfile: (params) => createPlayerProfileFromPrompt(params, serverAiAdapter),
+    listWorlds: ({ playerId, limit }) => (playerId ? listWorldsForPlayer({ playerId, limit }) : listWorlds({ limit })),
+    touchWorldPlayer: (params) => touchWorldPlayer(params),
+    publicErrorBody,
+    log,
+  });
+
+  return Bun.serve<WsData>({
+    port: options?.port ?? RUNTIME_CONFIG.port,
+
+    websocket: {
+      open(ws: ServerWebSocket<WsData>) {
+        log('WS', 'open', { remote: ws.remoteAddress });
+      },
+
+      async message(ws: ServerWebSocket<WsData>, message) {
+        await wsHub.message(ws, message as string | ArrayBuffer | Uint8Array);
+      },
+
+      close(ws: ServerWebSocket<WsData>) {
+        wsHub.close(ws);
+        log('WS', 'close', { remote: ws.remoteAddress });
+      },
+  },
+
+    async fetch(req: Request, bunServer): Promise<Response | undefined> {
     const requestId = newRequestId();
     const url = new URL(req.url);
 
@@ -303,6 +526,12 @@ const server = Bun.serve({
       return new Response(null, { status: 204, headers: responseHeaders });
     }
 
+    if (req.method === 'GET' && url.pathname === '/ws') {
+      const upgraded = bunServer.upgrade(req, { data: {} as WsData });
+      if (upgraded) return;
+      return new Response('WebSocket upgrade failed', { status: 400, headers: responseHeaders });
+    }
+
     try {
       // Health check
       if (req.method === 'GET' && url.pathname === '/api/health') {
@@ -310,8 +539,8 @@ const server = Bun.serve({
         return jsonResponse(
           {
             status: 'ok',
-            aiAdapter: aiAdapterName,
-            hasAiKey: !!(RUNTIME_CONFIG.anthropicApiKey || RUNTIME_CONFIG.openRouterApiKey),
+            aiAdapter: serverAiAdapterName,
+            hasAiKey: !options?.useMockAi && !!(RUNTIME_CONFIG.anthropicApiKey || RUNTIME_CONFIG.openRouterApiKey),
           },
           { headers: responseHeaders }
         );
@@ -357,7 +586,7 @@ const server = Bun.serve({
         });
 
         // Generate AI flavor for the starting room
-        state = await generateRoomFlavor(state);
+        state = await generateRoomFlavor(state, serverAiAdapter);
 
         games.set(gameId, state);
         const persisted = await persistGameState(gameId, state)();
@@ -407,9 +636,9 @@ const server = Bun.serve({
         const ensured = ensurePlayerInGame(state, { playerId: body.playerId, playerName: body.playerName });
         const newState = ensured.state;
         const player = newState.currentLevel.entities.find(
-          (e) => e.kind === 'Player' && e.id === ensured.playerEntityId
+          (e): e is Player => e.kind === 'Player' && e.id === ensured.playerEntityId
         );
-        if (!player || player.kind !== 'Player') {
+        if (!player) {
           const missingPlayer = appError(APP_ERROR_CODE.Unknown, 'Player could not be created in game state', {
             context: { gameId: body.gameId, playerId: body.playerId },
           });
@@ -430,6 +659,7 @@ const server = Bun.serve({
           return errorResponse(requestId, persisted.left, { headers: responseHeaders });
         }
 
+        wsHub.broadcastState(body.gameId, newState);
         return jsonResponse({ state: newState }, { headers: responseHeaders });
       }
 
@@ -472,7 +702,7 @@ const server = Bun.serve({
         const ensured = ensurePlayerInGame(state, { playerId: body.playerId, playerName: body.playerName });
         state = ensured.state;
         const player = state.currentLevel.entities.find(
-          (e) => e.kind === 'Player' && e.id === ensured.playerEntityId
+          (e): e is Player => e.kind === 'Player' && e.id === ensured.playerEntityId
         );
         log('HTTP', 'POST /api/command', {
           gameId: body.gameId.slice(-8),
@@ -492,15 +722,15 @@ const server = Bun.serve({
 
         // Handle Transition action specially to generate AI flavor for new levels
         if (body.action.kind === 'Command') {
-          newState = applyCommand(state, body.action.text);
+          newState = applyCommandForActor(state, player.id, body.action.text);
         } else if (body.action.kind === 'Transition') {
-          const result = handleTransition(state);
+          const result = handleTransition(state, player.id);
           newState = result.state;
 
           // If we entered a new level, generate AI flavor
           if (result.isNewLevel && result.newLevelId) {
             log('LEVEL', `Player transitioned to new level: ${result.newLevelId}`);
-            newState = await generateRoomFlavor(newState);
+            newState = await generateRoomFlavor(newState, serverAiAdapter);
           } else if (result.isNewLevel === false && state.world?.currentLevelId !== newState.world?.currentLevelId) {
             log('LEVEL', `Player returned to existing level: ${newState.world?.currentLevelId}`);
           }
@@ -521,8 +751,10 @@ const server = Bun.serve({
           return errorResponse(requestId, persisted.left, { headers: responseHeaders });
         }
 
+        wsHub.broadcastState(body.gameId, newState);
+
         // Log movement result
-        const newPlayer = getPlayer(newState);
+        const newPlayer = getPlayerById(newState, player.id);
         if (body.action.kind === 'Move' && newPlayer) {
           const moved = newPlayer.position.x !== player.position.x || newPlayer.position.y !== player.position.y;
           log('MOVE', moved
@@ -602,18 +834,23 @@ const server = Bun.serve({
 
       return errorResponse(requestId, appErr, { headers: responseHeaders });
     }
-  },
+    },
 });
-
-console.log(`Server running on http://localhost:${server.port}`);
-console.log(`AI adapter: ${aiAdapterName}`);
-
-// Handle graceful shutdown
-function shutdown() {
-  console.log('\nShutting down server...');
-  server.stop();
-  process.exit(0);
 }
 
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+if (import.meta.main) {
+  const server = createServer();
+
+  console.log(`Server running on http://localhost:${server.port}`);
+  console.log(`AI adapter: ${aiAdapterName}`);
+
+  // Handle graceful shutdown
+  function shutdown() {
+    console.log('\nShutting down server...');
+    server.stop();
+    process.exit(0);
+  }
+
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+}

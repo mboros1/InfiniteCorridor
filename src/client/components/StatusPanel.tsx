@@ -8,11 +8,13 @@ import type { GameState, Player } from '../../domain/model.js';
 
 interface StatusPanelProps {
   state: GameState;
+  playerEntityId?: string;
 }
 
 // Get player from state
-function getPlayer(state: GameState): Player | undefined {
-  const entity = state.currentLevel.entities.find((e) => e.id === state.playerId);
+function getPlayer(state: GameState, playerEntityId?: string): Player | undefined {
+  const id = playerEntityId ?? state.playerId;
+  const entity = state.currentLevel.entities.find((e) => e.id === id);
   return entity?.kind === 'Player' ? entity : undefined;
 }
 
@@ -47,8 +49,8 @@ const HpBar: React.FC<{ hp: number; maxHp: number; width?: number }> = ({ hp, ma
 /**
  * Main StatusPanel component.
  */
-export const StatusPanel: React.FC<StatusPanelProps> = ({ state }) => {
-  const player = getPlayer(state);
+export const StatusPanel: React.FC<StatusPanelProps> = ({ state, playerEntityId }) => {
+  const player = getPlayer(state, playerEntityId);
   if (!player) return null;
 
   return (

@@ -68,6 +68,9 @@ export interface BaseEntity<K extends EntityKind> {
 // Player has stats and a name. You can extend this with DnD-style attributes later.
 export interface Player extends BaseEntity<'Player'> {
   name: string;
+  description: string;
+  tokenChar: string;
+  tokenColor?: string;
   hp: number;
   maxHp: number;
   // Simple stats to start. You can grow this as needed.
@@ -207,6 +210,15 @@ export interface WorldConfig {
 // Important: tiles + entities + any per-level data you need.
 export type TileIndex = number;
 
+export interface MonsterSpawn {
+  id: string;
+  templateId: EnemyTemplateId;
+  position: Position;
+  maxHp: number;
+  lastSpawnedTurn?: number;
+  lastDefeatedTurn?: number;
+}
+
 export interface LevelState {
   id: LevelId;
   depth: number; // e.g. 1 for first floor, etc.
@@ -222,6 +234,9 @@ export interface LevelState {
 
   // Simple fog-of-war or "has player seen this tile?" tracking.
   discovered: boolean[]; // same indexing as tiles.
+
+  // Spawn definitions for monsters that can respawn.
+  monsterSpawns?: MonsterSpawn[];
 }
 
 // Game message for the log

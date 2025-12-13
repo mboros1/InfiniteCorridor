@@ -15,6 +15,8 @@ function makeState(): GameState {
         id: 'player-1',
         kind: 'Player',
         name: 'Hero',
+        description: 'A traveler.',
+        tokenChar: '@',
         position: { x: 0, y: 0 },
         hp: 10,
         maxHp: 10,
@@ -98,7 +100,7 @@ describe('server command application', () => {
     expect(next.turn).toBe(state.turn);
     expect(next.messages).toHaveLength(1);
     expect(next.messages[0].kind).toBe('chat');
-    expect(next.messages[0].text).toBe('You say: hello');
+    expect(next.messages[0].text).toBe('Hero: hello');
   });
 
   test('/look adds description + roster messages', () => {
@@ -110,7 +112,7 @@ describe('server command application', () => {
     expect(next.messages[0].text).toBe('A test room');
 
     expect(next.messages[1].kind).toBe('system');
-    expect(next.messages[1].text).toContain('Players: Hero (you)');
+    expect(next.messages[1].text).toContain('Players: Hero');
     expect(next.messages[1].text).toContain('Hostiles: Goblin');
     expect(next.messages[1].text).toContain('Items: Potion');
   });
@@ -121,7 +123,6 @@ describe('server command application', () => {
 
     expect(next.messages).toHaveLength(1);
     expect(next.messages[0].text).toContain('Players here:');
-    expect(next.messages[0].text).toContain('Hero (you)');
+    expect(next.messages[0].text).toContain('Hero');
   });
 });
-

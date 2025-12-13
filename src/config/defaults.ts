@@ -21,6 +21,7 @@ export const DEFAULT_CONFIG: GameConfig = {
   gameplay: {
     playerFovRadius: 15, // Increased from 8 for open wilderness feel
     monsterDetectionRangeSq: 15 * 15, // 225, matches FOV radius
+    monsterRespawnTurns: 50,
   },
 
   biome: {

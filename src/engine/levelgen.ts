@@ -563,6 +563,8 @@ export function generateLevel(rng: RNG, config: LevelGenConfig): LevelGenResult 
       id: 'player-1',
       kind: 'Player',
       name: 'Unnamed Wanderer',
+      description: 'A traveler of the infinite corridor.',
+      tokenChar: '@',
       position: playerPos,
       hp: 20,
       maxHp: 20,

@@ -29,6 +29,9 @@ const baseEntitySchema = z.object({
 const playerEntitySchema = baseEntitySchema.extend({
   kind: z.literal('Player'),
   name: z.string(),
+  description: z.string().optional().default('A traveler of the infinite corridor.'),
+  tokenChar: z.string().min(1).optional().default('@'),
+  tokenColor: z.string().regex(/^#([0-9A-F]{3}){1,2}$/i).optional(),
   hp: z.number(),
   maxHp: z.number(),
   strength: z.number(),
@@ -51,7 +54,7 @@ const itemEntitySchema = baseEntitySchema.extend({
   name: z.string(),
 });
 
-const entitySchema: z.ZodType<Entity> = z.discriminatedUnion('kind', [
+const entitySchema: z.ZodType<Entity, z.ZodTypeDef, unknown> = z.discriminatedUnion('kind', [
   playerEntitySchema,
   monsterEntitySchema,
   itemEntitySchema,
@@ -89,8 +92,23 @@ const enemyFlavorSchema: z.ZodType<Record<string, EnemyFlavor>> = z.record(
   })
 );
 
+// Position schema
+const positionSchema: z.ZodType<Position> = z.object({
+  x: z.number().int(),
+  y: z.number().int(),
+});
+
+const monsterSpawnSchema = z.object({
+  id: z.string(),
+  templateId: z.string(),
+  position: positionSchema,
+  maxHp: z.number().nonnegative(),
+  lastSpawnedTurn: z.number().int().nonnegative().optional(),
+  lastDefeatedTurn: z.number().int().nonnegative().optional(),
+});
+
 // Level state schema with proper typing
-const levelStateSchema: z.ZodType<LevelState> = z.object({
+const levelStateSchema: z.ZodType<LevelState, z.ZodTypeDef, unknown> = z.object({
   id: z.string(),
   depth: z.number().int().nonnegative(),
   width: z.number().int().positive(),
@@ -98,6 +116,7 @@ const levelStateSchema: z.ZodType<LevelState> = z.object({
   tiles: z.array(z.custom<TileKind>((val) => val in TILE_DATA)),
   discovered: z.array(z.boolean()),
   entities: z.array(entitySchema),
+  monsterSpawns: z.array(monsterSpawnSchema).optional(),
 });
 
 export function serializeLevel(level: LevelState): string {
@@ -146,12 +165,6 @@ const worldConfigSchema: z.ZodType<WorldConfig> = z.object({
   rulesVersion: z.string().min(1),
 });
 
-// Position schema
-const positionSchema: z.ZodType<Position> = z.object({
-  x: z.number().int(),
-  y: z.number().int(),
-});
-
 // Level edge schema
 const levelEdgeSchema: z.ZodType<LevelEdge> = z.object({
   id: z.string(),
@@ -168,7 +181,7 @@ const levelCoordSchema: z.ZodType<LevelCoord> = z.object({
 });
 
 // Stored level schema
-const storedLevelSchema: z.ZodType<StoredLevel> = z.object({
+const storedLevelSchema: z.ZodType<StoredLevel, z.ZodTypeDef, unknown> = z.object({
   level: levelStateSchema,
   coord: levelCoordSchema,
   compressedAt: z.number().int().nonnegative(),
@@ -178,14 +191,14 @@ const storedLevelSchema: z.ZodType<StoredLevel> = z.object({
 });
 
 // World state schema
-const worldStateSchema: z.ZodType<WorldState> = z.object({
+const worldStateSchema: z.ZodType<WorldState, z.ZodTypeDef, unknown> = z.object({
   levels: z.record(storedLevelSchema),
   edges: z.array(levelEdgeSchema),
   currentLevelId: z.string(),
 });
 
 // Game state schema with proper typing
-const gameStateSchema: z.ZodType<GameState> = z.object({
+const gameStateSchema: z.ZodType<GameState, z.ZodTypeDef, unknown> = z.object({
   worldConfig: worldConfigSchema,
   seed: z.number().int(),
   world: worldStateSchema,

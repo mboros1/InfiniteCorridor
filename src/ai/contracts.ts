@@ -39,6 +39,17 @@ export interface RoomFlavorResponse {
   tileFlavors: Partial<Record<TileKind, TileFlavor>>;
 }
 
+export interface PlayerProfileRequest {
+  prompt: string;
+}
+
+export interface PlayerProfileResponse {
+  name: string;
+  description: string;
+  tokenChar: string;
+  tokenColor: string;
+}
+
 // Narrow interface that the rest of the code calls.
 // Implementation will live in another file (e.g., src/ai/openRouterAdapter.ts),
 // but the rest of the system just depends on this contract.
@@ -46,4 +57,8 @@ export interface AIAdapter {
   generateRoomFlavor(
     request: RoomFlavorRequest
   ): Promise<RoomFlavorResponse>;
+
+  generatePlayerProfile(
+    request: PlayerProfileRequest
+  ): Promise<PlayerProfileResponse>;
 }

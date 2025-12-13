@@ -9,6 +9,44 @@ export const worlds = sqliteTable('worlds', {
   createdAt: integer('created_at', { mode: 'number' }).notNull(),
 });
 
+export const players = sqliteTable(
+  'players',
+  {
+    playerId: text('player_id').primaryKey(), // UUID
+    prompt: text('prompt'),
+    name: text('name').notNull(),
+    description: text('description').notNull(),
+    tokenChar: text('token_char').notNull(),
+    tokenColor: text('token_color'),
+    createdAt: integer('created_at', { mode: 'number' }).notNull(),
+    updatedAt: integer('updated_at', { mode: 'number' }).notNull(),
+    lastUsedAt: integer('last_used_at', { mode: 'number' }).notNull(),
+  },
+  (table) => ({
+    lastUsedIdx: index('players_last_used_idx').on(table.lastUsedAt),
+  })
+);
+
+export const worldPlayers = sqliteTable(
+  'world_players',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    worldId: text('world_id')
+      .notNull()
+      .references(() => worlds.id, { onDelete: 'cascade' }),
+    playerId: text('player_id')
+      .notNull()
+      .references(() => players.playerId, { onDelete: 'cascade' }),
+    joinedAt: integer('joined_at', { mode: 'number' }).notNull(),
+    lastSeenAt: integer('last_seen_at', { mode: 'number' }).notNull(),
+  },
+  (table) => ({
+    worldPlayerUnique: uniqueIndex('world_players_world_player_unique').on(table.worldId, table.playerId),
+    byPlayerRecent: index('world_players_player_recent_idx').on(table.playerId, table.lastSeenAt),
+    byWorldRecent: index('world_players_world_recent_idx').on(table.worldId, table.lastSeenAt),
+  })
+);
+
 export const levels = sqliteTable(
   'levels',
   {
