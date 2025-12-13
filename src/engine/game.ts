@@ -639,6 +639,9 @@ export function applyAction(
       const result = handleTransition(state);
       return advanceTurn(result.state);
     }
+
+    case 'Command':
+      return state;
   }
 }
 

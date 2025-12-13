@@ -11,6 +11,7 @@ import { serializeGameState } from '../db/serialization.js';
 import { APP_ERROR_CODE, appError, toAppError, type AppError } from '../errors/appError.js';
 import { RUNTIME_CONFIG } from '../config/runtime.js';
 import { E, O, TE, pipe } from '../utils/fp.js';
+import { applyCommand } from './commands.js';
 import { z } from 'zod';
 
 // ---- Logging ----
@@ -377,6 +378,7 @@ const server = Bun.serve({
           z.object({ kind: z.literal('Wait') }),
           z.object({ kind: z.literal('Attack'), direction: z.enum(['Up', 'Down', 'Left', 'Right']) }),
           z.object({ kind: z.literal('Transition') }),
+          z.object({ kind: z.literal('Command'), text: z.string().min(1).max(500) }),
         ]);
 
         const CommandBody = z.object({
@@ -406,7 +408,7 @@ const server = Bun.serve({
         const player = getPlayer(state);
         log('HTTP', 'POST /api/command', {
           gameId: body.gameId.slice(-8),
-          action: body.action,
+          action: body.action.kind === 'Command' ? { kind: 'Command', text: body.action.text.slice(0, 80) } : body.action,
           playerPos: player ? `(${player.position.x},${player.position.y})` : 'unknown',
         });
         if (!player) {
@@ -420,7 +422,9 @@ const server = Bun.serve({
         let newState: GameState;
 
         // Handle Transition action specially to generate AI flavor for new levels
-        if (body.action.kind === 'Transition') {
+        if (body.action.kind === 'Command') {
+          newState = applyCommand(state, body.action.text);
+        } else if (body.action.kind === 'Transition') {
           const result = handleTransition(state);
           newState = result.state;
 

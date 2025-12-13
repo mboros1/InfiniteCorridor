@@ -59,7 +59,7 @@ const gameMessageSchema: z.ZodType<GameMessage> = z.object({
   turn: z.number(),
   text: z.string(),
   kind: z.custom<GameMessageKind>((val) => 
-    ['info', 'combat', 'flavor', 'system'].includes(val as string)
+    ['info', 'combat', 'flavor', 'system', 'chat'].includes(val as string)
   ),
 });
 

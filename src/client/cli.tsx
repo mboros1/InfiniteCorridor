@@ -95,6 +95,8 @@ const App: React.FC = () => {
   const [screen, setScreen] = useState<Screen>('Corridor');
   const [themePrompt, setThemePrompt] = useState('');
   const [inputBuffer, setInputBuffer] = useState('');
+  const [gameInputMode, setGameInputMode] = useState<'normal' | 'command'>('normal');
+  const [commandBuffer, setCommandBuffer] = useState('');
   const [gameId, setGameId] = useState<string | null>(null);
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -156,6 +158,12 @@ const App: React.FC = () => {
   }, [handleStartGame, inputBuffer, inputMode, themePrompt]);
 
   const handleGameInput = useCallback((input: string, key: Key) => {
+    if (input === '/' && !key.ctrl && !key.meta) {
+      setGameInputMode('command');
+      setCommandBuffer('/');
+      return;
+    }
+
     let action: Action | null = null;
     let direction: Direction | null = null;
 
@@ -175,6 +183,33 @@ const App: React.FC = () => {
     }
   }, [handleAction]);
 
+  const handleGameCommandInput = useCallback((input: string, key: Key) => {
+    if (key.escape) {
+      setGameInputMode('normal');
+      setCommandBuffer('');
+      return;
+    }
+
+    if (key.return) {
+      const text = commandBuffer.trim();
+      setGameInputMode('normal');
+      setCommandBuffer('');
+
+      if (!text || text === '/') return;
+      handleAction({ kind: 'Command', text });
+      return;
+    }
+
+    if (key.backspace || key.delete) {
+      setCommandBuffer((prev) => (prev.length > 0 ? prev.slice(0, -1) : prev));
+      return;
+    }
+
+    if (!key.ctrl && !key.meta && !key.escape && input) {
+      setCommandBuffer((prev) => prev + input);
+    }
+  }, [commandBuffer, handleAction]);
+
   const handleGameOverInput = useCallback((_input: string, key: Key) => {
     if (key.return) {
       setScreen('Corridor');
@@ -182,6 +217,8 @@ const App: React.FC = () => {
       setGameState(null);
       setThemePrompt('');
       setInputMode('theme');
+      setGameInputMode('normal');
+      setCommandBuffer('');
     }
   }, []);
 
@@ -195,6 +232,8 @@ const App: React.FC = () => {
         setThemePrompt('');
         setInputMode('theme');
         setInputBuffer('');
+        setGameInputMode('normal');
+        setCommandBuffer('');
       } else {
         exit();
       }
@@ -205,7 +244,9 @@ const App: React.FC = () => {
       case 'Corridor':
         return handleCorridorInput(input, key);
       case 'Game':
-        return handleGameInput(input, key);
+        return gameInputMode === 'command'
+          ? handleGameCommandInput(input, key)
+          : handleGameInput(input, key);
       case 'GameOver':
         return handleGameOverInput(input, key);
       default:
@@ -325,12 +366,19 @@ const App: React.FC = () => {
         </Box>
         <StatusPanel state={gameState} />
         <MessageLog state={gameState} />
+        {gameInputMode === 'command' && !isTransitioning && (
+          <Box marginTop={1}>
+            <Text color="cyan">{commandBuffer}</Text>
+            <Text dimColor>_</Text>
+            <Text dimColor> (Enter to send, Esc to cancel)</Text>
+          </Box>
+        )}
         {isTransitioning ? (
           <Box borderStyle="double" borderColor="cyan" paddingX={2} paddingY={1}>
             <Text bold color="cyan">Traveling to a new area... </Text>
             <Text dimColor>Generating world...</Text>
           </Box>
-        ) : (
+        ) : gameInputMode === 'command' ? null : (
           <HelpBar />
         )}
       </Box>
