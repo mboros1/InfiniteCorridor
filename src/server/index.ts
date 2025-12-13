@@ -113,6 +113,8 @@ function statusForAppError(error: AppError): number {
       return 400;
     case APP_ERROR_CODE.NotFound:
       return 404;
+    case APP_ERROR_CODE.AlreadyLoggedIn:
+      return 409;
     default:
       return 500;
   }
@@ -206,7 +208,12 @@ function persistGameState(gameId: string, state: GameState): TE.TaskEither<AppEr
             })
           );
 
-          return pipe([...levelTasks, upsertEdges(gameId, state.world.edges)], TE.sequenceArray, TE.map(() => undefined));
+          const knownLevelIds = new Set(Object.keys(state.world.levels));
+          const edgesToPersist = state.world.edges.filter(
+            (edge) => knownLevelIds.has(edge.fromLevelId) && knownLevelIds.has(edge.toLevelId)
+          );
+
+          return pipe([...levelTasks, upsertEdges(gameId, edgesToPersist)], TE.sequenceArray, TE.map(() => undefined));
         })
       )
     )
@@ -275,13 +282,16 @@ function getOrCreatePlayerProfilePublic(params: {
   );
 }
 
-function createPlayerProfileFromPrompt(params: { playerId?: string; prompt: string }): TE.TaskEither<AppError, PlayerProfilePublic> {
+function createPlayerProfileFromPrompt(
+  params: { playerId?: string; prompt: string },
+  adapter: AIAdapter = aiAdapter
+): TE.TaskEither<AppError, PlayerProfilePublic> {
   const playerId = params.playerId ?? crypto.randomUUID();
 
   return pipe(
     TE.tryCatch(
       async () => {
-        const profile: PlayerProfileResponse = await aiAdapter.generatePlayerProfile({ prompt: params.prompt });
+        const profile: PlayerProfileResponse = await adapter.generatePlayerProfile({ prompt: params.prompt });
         return profile;
       },
       (cause) =>
@@ -307,7 +317,7 @@ function createPlayerProfileFromPrompt(params: { playerId?: string; prompt: stri
 }
 
 // Generate AI flavor for the current room
-async function generateRoomFlavor(state: GameState): Promise<GameState> {
+async function generateRoomFlavor(state: GameState, adapter: AIAdapter = aiAdapter): Promise<GameState> {
   const level = state.currentLevel;
   const monsters = level.entities.filter((e): e is Monster => e.kind === 'Monster');
   const templateIds = monsters.map((m) => m.templateId);
@@ -348,7 +358,7 @@ async function generateRoomFlavor(state: GameState): Promise<GameState> {
   const startTime = Date.now();
 
   try {
-    const response = await aiAdapter.generateRoomFlavor(request);
+    const response = await adapter.generateRoomFlavor(request);
     const elapsed = Date.now() - startTime;
 
     log('AI', `Response received (${elapsed}ms)`, {
@@ -392,7 +402,10 @@ async function generateRoomFlavor(state: GameState): Promise<GameState> {
   }
 }
 
-export function createServer(options?: { port?: number; startTickTimers?: boolean }) {
+export function createServer(options?: { port?: number; startTickTimers?: boolean; useMockAi?: boolean }) {
+  const serverAiAdapter = options?.useMockAi ? createMockAdapter() : aiAdapter;
+  const serverAiAdapterName = options?.useMockAi ? 'Mock' : aiAdapterName;
+
   const wsHub = createWsHub({
     newRequestId,
     newGameId,
@@ -404,7 +417,7 @@ export function createServer(options?: { port?: number; startTickTimers?: boolea
     },
     loadGameState,
     persistGameState,
-    generateRoomFlavor,
+    generateRoomFlavor: (state) => generateRoomFlavor(state, serverAiAdapter),
     listPlayers: (limit) => listPlayerProfiles({ limit }),
     getPlayerProfile: (playerId) =>
       pipe(
@@ -412,7 +425,7 @@ export function createServer(options?: { port?: number; startTickTimers?: boolea
         TE.map((maybe) => (O.isSome(maybe) ? O.some(toPlayerProfilePublic(maybe.value)) : O.none))
       ),
     getOrCreatePlayerProfile: (params) => getOrCreatePlayerProfilePublic(params),
-    createPlayerProfile: (params) => createPlayerProfileFromPrompt(params),
+    createPlayerProfile: (params) => createPlayerProfileFromPrompt(params, serverAiAdapter),
     listWorlds: ({ playerId, limit }) => (playerId ? listWorldsForPlayer({ playerId, limit }) : listWorlds({ limit })),
     touchWorldPlayer: (params) => touchWorldPlayer(params),
     publicErrorBody,
@@ -467,8 +480,8 @@ export function createServer(options?: { port?: number; startTickTimers?: boolea
         return jsonResponse(
           {
             status: 'ok',
-            aiAdapter: aiAdapterName,
-            hasAiKey: !!(RUNTIME_CONFIG.anthropicApiKey || RUNTIME_CONFIG.openRouterApiKey),
+            aiAdapter: serverAiAdapterName,
+            hasAiKey: !options?.useMockAi && !!(RUNTIME_CONFIG.anthropicApiKey || RUNTIME_CONFIG.openRouterApiKey),
           },
           { headers: responseHeaders }
         );
@@ -514,7 +527,7 @@ export function createServer(options?: { port?: number; startTickTimers?: boolea
         });
 
         // Generate AI flavor for the starting room
-        state = await generateRoomFlavor(state);
+        state = await generateRoomFlavor(state, serverAiAdapter);
 
         games.set(gameId, state);
         const persisted = await persistGameState(gameId, state)();
@@ -658,7 +671,7 @@ export function createServer(options?: { port?: number; startTickTimers?: boolea
           // If we entered a new level, generate AI flavor
           if (result.isNewLevel && result.newLevelId) {
             log('LEVEL', `Player transitioned to new level: ${result.newLevelId}`);
-            newState = await generateRoomFlavor(newState);
+            newState = await generateRoomFlavor(newState, serverAiAdapter);
           } else if (result.isNewLevel === false && state.world?.currentLevelId !== newState.world?.currentLevelId) {
             log('LEVEL', `Player returned to existing level: ${newState.world?.currentLevelId}`);
           }

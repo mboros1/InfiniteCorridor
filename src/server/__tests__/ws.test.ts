@@ -9,7 +9,7 @@ function pickPort(): number {
 function startTestServer(): ReturnType<typeof createServer> {
   try {
     // Prefer an ephemeral port to avoid conflicts in parallel test runs.
-    return createServer({ port: 0, startTickTimers: false });
+    return createServer({ port: 0, startTickTimers: false, useMockAi: true });
   } catch {
     // Fall back to random ports for environments that don't support port 0.
   }
@@ -18,7 +18,7 @@ function startTestServer(): ReturnType<typeof createServer> {
   for (let attempt = 0; attempt < 10; attempt++) {
     const port = pickPort();
     try {
-      return createServer({ port, startTickTimers: false });
+      return createServer({ port, startTickTimers: false, useMockAi: true });
     } catch (error) {
       lastError = error;
     }

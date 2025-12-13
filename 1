@@ -1,0 +1,124 @@
+[0m
+src/server/__tests__/commands.test.ts:
+[0m[32m✓[0m [0mserver command parsing[2m >[0m[1m parseCommandText parses /say[0m [0m[2m[0.99ms[0m[2m][0m
+[0m[32m✓[0m [0mserver command parsing[2m >[0m[1m parseCommandText parses /look and /who[0m
+[0m[32m✓[0m [0mserver command parsing[2m >[0m[1m parseCommandText treats empty input as Empty[0m
+[0m[32m✓[0m [0mserver command application[2m >[0m[1m /say adds a chat message and does not advance turn[0m
+[0m[32m✓[0m [0mserver command application[2m >[0m[1m /look adds description + roster messages[0m
+[0m[32m✓[0m [0mserver command application[2m >[0m[1m /who lists players[0m [0m[2m[0.41ms[0m[2m][0m
+[0m
+src/server/__tests__/players.test.ts:
+[0m[32m✓[0m [0mensurePlayerInGame[2m >[0m[1m remaps legacy single-player id to p:<playerId> on bootstrap[0m [0m[2m[0.47ms[0m[2m][0m
+[0m[32m✓[0m [0mensurePlayerInGame[2m >[0m[1m adds a new player entity when missing and syncs world.currentLevel[0m [0m[2m[0.65ms[0m[2m][0m
+[0m
+src/server/__tests__/wsHub.test.ts:
+[0m[32m✓[0m [0mwsHub[2m >[0m[1m invalid JSON -> response ok:false BAD_REQUEST[0m [0m[2m[2.29ms[0m[2m][0m
+[0m[32m✓[0m [0mwsHub[2m >[0m[1m schema invalid -> response ok:false uses provided requestId[0m [0m[2m[0.31ms[0m[2m][0m
+[0m[32m✓[0m [0mwsHub[2m >[0m[1m startRun -> join -> action broadcasts state updates and leave unsubscribes[0m [0m[2m[[1m22.89ms[0m[2m][0m
+[0m[32m✓[0m [0mwsHub[2m >[0m[1m broadcastState sets gameStatus gameOver when player is dead[0m [0m[2m[[1m12.98ms[0m[2m][0m
+[0m[32m✓[0m [0mwsHub[2m >[0m[1m join missing game -> response ok:false NOT_FOUND[0m [0m[2m[0.26ms[0m[2m][0m
+[0m[32m✓[0m [0mwsHub[2m >[0m[1m invalid action payload -> response ok:false BAD_REQUEST[0m [0m[2m[0.03ms[0m[2m][0m
+[0m[32m✓[0m [0mwsHub[2m >[0m[1m non-command actions are buffered and applied on tick[0m [0m[2m[1.12ms[0m[2m][0m
+[0m[32m✓[0m [0mwsHub[2m >[0m[1m latest action per tick wins[0m [0m[2m[0.25ms[0m[2m][0m
+[0m[32m✓[0m [0mwsHub[2m >[0m[1m duplicate sockets for same player replace the existing session[0m [0m[2m[9.71ms[0m[2m][0m
+[0m[32m✓[0m [0mwsHub[2m >[0m[1m multiple players buffer actions and apply them on the same tick[0m [0m[2m[2.19ms[0m[2m][0m
+[0m
+src/server/__tests__/ws.test.ts:
+[0m[1m66 |[0m   }[0m[2m;[0m
+[0m[1m67 |[0m 
+[0m[1m68 |[0m   [0m[35masync[0m [0m[35mfunction[0m next(timeoutMs = [0m[33m2[0m_000): Promise[0m<[0m[0m[34munknown[0m> {
+[0m[1m69 |[0m     [0m[35mif[0m (queue.length > [0m[33m0[0m) [0m[35mreturn[0m queue[0m[3m[1m.shift[0m()[0m[2m;[0m
+[0m[1m70 |[0m     [0m[35mreturn[0m [0m[35mnew[0m [0m[1mPromise[0m((resolve, reject) => {
+[0m[1m71 |[0m       [0m[35mconst[0m timeout = setTimeout(() => reject([0m[35mnew[0m [0m[1mError[0m([0m[32m'Message timeout'[0m)), timeoutMs)[0m[2m;[0m
+                                                       [31m[1m^[0m
+[0m[31merror[0m[2m:[0m [1mMessage timeout[0m
+[0m      [2mat [0m[0m[2m<anonymous>[0m[2m ([0m[0m[36m[2m/Users/martinboros/git/infinite_corridor/[0m[36msrc/server/__tests__/ws.test.ts[0m[2m:[0m[33m71[0m[2m:[33m51[0m[2m)[0m
+[0m[31m✗[0m [0mwebsocket protocol (smoke)[2m >[0m[1m startRun -> join -> broadcast state updates[0m [0m[2m[[1m2014.83ms[0m[2m][0m
+[0m
+src/utils/__tests__/logger.test.ts:
+[0m[32m✓[0m [0mLogger System[2m > [0mconsoleLogger[2m >[0m[1m should have all required logger methods[0m
+[0m[32m✓[0m [0mLogger System[2m > [0mconsoleLogger[2m >[0m[1m should not throw when calling methods[0m
+[0m[32m✓[0m [0mLogger System[2m > [0mnullLogger[2m >[0m[1m should have all required logger methods[0m
+[0m[32m✓[0m [0mLogger System[2m > [0mnullLogger[2m >[0m[1m should be silent (no-op functions)[0m
+[0m[32m✓[0m [0mLogger System[2m > [0mcreateTestLogger[2m >[0m[1m should create logger with getLogs method[0m
+[0m[32m✓[0m [0mLogger System[2m > [0mcreateTestLogger[2m >[0m[1m should capture log messages[0m
+[0m[32m✓[0m [0mLogger System[2m > [0mcreateTestLogger[2m >[0m[1m should capture log messages with context[0m
+[0m[32m✓[0m [0mLogger System[2m > [0mcreateTestLogger[2m >[0m[1m should clear logs when clearLogs is called[0m
+[0m[32m✓[0m [0mLogger System[2m > [0mcreateTestLogger[2m >[0m[1m should return new array from getLogs to prevent mutation[0m [0m[2m[1.96ms[0m[2m][0m
+[0m[32m✓[0m [0mLogger System[2m > [0mcreatePrefixedLogger[2m >[0m[1m should create logger with prefix[0m [0m[2m[0.07ms[0m[2m][0m
+[0m[32m✓[0m [0mLogger System[2m > [0mcreatePrefixedLogger[2m >[0m[1m should add prefix to log messages[0m
+[0m[32m✓[0m [0mLogger System[2m > [0mcreatePrefixedLogger[2m >[0m[1m should use console logger by default[0m
+[0m[32m✓[0m [0mLogger System[2m > [0mcreatePrefixedLogger[2m >[0m[1m should handle empty prefix[0m
+[0m[32m✓[0m [0mLogger System[2m > [0mLogger Interface Compliance[2m >[0m[1m all loggers should implement Logger interface[0m
+[0m[32m✓[0m [0mLogger System[2m > [0mLogger Interface Compliance[2m >[0m[1m all logger methods should accept variable arguments[0m
+[0m
+src/ai/__tests__/utils.test.ts:
+[0m[32m✓[0m [0mAI Utilities[2m > [0mnormalizeAiResponse[2m >[0m[1m should handle valid AI response with proper structure[0m [0m[2m[4.53ms[0m[2m][0m
+[0m[32m✓[0m [0mAI Utilities[2m > [0mnormalizeAiResponse[2m >[0m[1m should convert enemyFlavors array to object[0m
+[0m[32m✓[0m [0mAI Utilities[2m > [0mnormalizeAiResponse[2m >[0m[1m should convert tileFlavors array to object[0m [0m[2m[2.08ms[0m[2m][0m
+[0m[32m✓[0m [0mAI Utilities[2m > [0mnormalizeAiResponse[2m >[0m[1m should add default tile properties when missing[0m
+[0m[32m✓[0m [0mAI Utilities[2m > [0mnormalizeAiResponse[2m >[0m[1m should handle null input gracefully[0m
+[0m[32m✓[0m [0mAI Utilities[2m > [0mnormalizeAiResponse[2m >[0m[1m should handle undefined input gracefully[0m
+[0m[32m✓[0m [0mAI Utilities[2m > [0mnormalizeAiResponse[2m >[0m[1m should warn on invalid enemy flavor items[0m
+[0m[32m✓[0m [0mAI Utilities[2m > [0mcreateFallbackResponse[2m >[0m[1m should create fallback response with no enemies[0m
+[0m[32m✓[0m [0mAI Utilities[2m > [0mcreateFallbackResponse[2m >[0m[1m should create fallback response with common enemies[0m
+[0m[32m✓[0m [0mAI Utilities[2m > [0mcreateFallbackResponse[2m >[0m[1m should create fallback response with elite enemies[0m
+[0m[32m✓[0m [0mAI Utilities[2m > [0mcreateFallbackResponse[2m >[0m[1m should create fallback response with boss enemies[0m
+[0m[32m✓[0m [0mAI Utilities[2m > [0mcreateFallbackResponse[2m >[0m[1m should create fallback response with multiple enemies[0m
+[0m[32m✓[0m [0mAI Utilities[2m > [0mcreateFallbackResponse[2m >[0m[1m should handle unknown enemy roles gracefully[0m
+[0m[32m✓[0m [0mAI Utilities[2m > [0mparseRoomFlavorResponseText[2m >[0m[1m parses fenced JSON and returns typed response[0m
+[0m[32m✓[0m [0mAI Utilities[2m > [0mparseRoomFlavorResponseText[2m >[0m[1m rejects multi-column/emoji tile chars[0m [0m[2m[1.52ms[0m[2m][0m
+[0m[32m✓[0m [0mAI Utilities[2m > [0mparseRoomFlavorResponseText[2m >[0m[1m rejects multi-character tile chars[0m
+[0m[32m✓[0m [0mAI Utilities[2m > [0mparseRoomFlavorResponseText[2m >[0m[1m rejects multi-line descriptions[0m
+[0m[32m✓[0m [0mAI Utilities[2m > [0mparseRoomFlavorResponseText[2m >[0m[1m rejects control/format characters in text (bidi override)[0m [0m[2m[0.35ms[0m[2m][0m
+[0m[32m✓[0m [0mAI Utilities[2m > [0mparseRoomFlavorResponseText[2m >[0m[1m sanitizes invalid tile colors to defaults[0m
+[0m[32m✓[0m [0mAI Utilities[2m > [0mparseRoomFlavorResponseText[2m >[0m[1m returns parse error code on invalid JSON[0m
+[0m[32m✓[0m [0mAI Utilities[2m > [0mparseRoomFlavorResponseText[2m >[0m[1m returns invalid error code on schema mismatch[0m [0m[2m[0.63ms[0m[2m][0m
+[0m[32m✓[0m [0mAI Utilities[2m > [0mparseRoomFlavorResponseText[2m >[0m[1m returns empty error code on blank content[0m
+[0m[32m✓[0m [0mAI Utilities[2m > [0mrepair helpers[2m >[0m[1m shouldAttemptRoomFlavorRepair is true only for parse/invalid[0m
+[0m[32m✓[0m [0mAI Utilities[2m > [0mrepair helpers[2m >[0m[1m buildRoomFlavorRepairPrompt includes validation issue paths when available[0m
+[0m[32m✓[0m [0mAI Utilities[2m > [0mrepair helpers[2m >[0m[1m buildRoomFlavorRepairPrompt falls back to root message when issues missing[0m
+[0m[32m✓[0m [0mAI Utilities[2m > [0mplayer profile boundary[2m >[0m[1m parses valid JSON profile[0m
+[0m[32m✓[0m [0mAI Utilities[2m > [0mplayer profile boundary[2m >[0m[1m accepts token.char shorthand via normalization[0m [0m[2m[0.81ms[0m[2m][0m
+[0m[32m✓[0m [0mAI Utilities[2m > [0mplayer profile boundary[2m >[0m[1m rejects multi-column/emoji tokenChar[0m [0m[2m[0.05ms[0m[2m][0m
+[0m[32m✓[0m [0mAI Utilities[2m > [0mplayer profile boundary[2m >[0m[1m rejects multi-line fields[0m
+[0m[32m✓[0m [0mAI Utilities[2m > [0mplayer profile boundary[2m >[0m[1m returns empty error code on blank content[0m
+[0m[32m✓[0m [0mAI Utilities[2m > [0mplayer profile boundary[2m >[0m[1m shouldAttemptPlayerProfileRepair is true only for parse/invalid[0m
+[0m[32m✓[0m [0mAI Utilities[2m > [0mplayer profile boundary[2m >[0m[1m buildPlayerProfileRepairPrompt includes validation issue paths when available[0m [0m[2m[0.30ms[0m[2m][0m
+[0m
+src/db/__tests__/serialization.test.ts:
+[0m[32m✓[0m [0mSerialization Functions[2m > [0mLevel Serialization[2m >[0m[1m should serialize and deserialize level correctly[0m [0m[2m[2.00ms[0m[2m][0m
+[0m[32m✓[0m [0mSerialization Functions[2m > [0mLevel Serialization[2m >[0m[1m should validate level before serialization[0m [0m[2m[0.58ms[0m[2m][0m
+[0m[32m✓[0m [0mSerialization Functions[2m > [0mLevel Serialization[2m >[0m[1m should handle empty level[0m [0m[2m[0.35ms[0m[2m][0m
+[0m[32m✓[0m [0mSerialization Functions[2m > [0mTile Flavors Serialization[2m >[0m[1m should serialize and deserialize tile flavors[0m
+[0m[32m✓[0m [0mSerialization Functions[2m > [0mTile Flavors Serialization[2m >[0m[1m should handle empty tile flavors[0m [0m[2m[0.02ms[0m[2m][0m
+[0m[32m✓[0m [0mSerialization Functions[2m > [0mTile Flavors Serialization[2m >[0m[1m should handle null/undefined tile flavors[0m
+[0m[32m✓[0m [0mSerialization Functions[2m > [0mTile Flavors Serialization[2m >[0m[1m should validate tile flavors before serialization[0m [0m[2m[0.11ms[0m[2m][0m
+[0m[32m✓[0m [0mSerialization Functions[2m > [0mEnemy Flavors Serialization[2m >[0m[1m should serialize and deserialize enemy flavors[0m
+[0m[32m✓[0m [0mSerialization Functions[2m > [0mEnemy Flavors Serialization[2m >[0m[1m should handle empty enemy flavors[0m [0m[2m[0.11ms[0m[2m][0m
+[0m[32m✓[0m [0mSerialization Functions[2m > [0mEnemy Flavors Serialization[2m >[0m[1m should handle null/undefined enemy flavors[0m [0m[2m[0.03ms[0m[2m][0m
+[0m[32m✓[0m [0mSerialization Functions[2m > [0mEnemy Flavors Serialization[2m >[0m[1m should validate enemy flavors before serialization[0m
+[0m[32m✓[0m [0mSerialization Functions[2m > [0mGame State Serialization[2m >[0m[1m should serialize and deserialize game state[0m [0m[2m[0.32ms[0m[2m][0m
+[0m[32m✓[0m [0mSerialization Functions[2m > [0mGame State Serialization[2m >[0m[1m should validate game state before serialization[0m [0m[2m[0.47ms[0m[2m][0m
+[0m[32m✓[0m [0mSerialization Functions[2m > [0mGame State Serialization[2m >[0m[1m should handle complex game state with entities[0m
+[0m[32m✓[0m [0mSerialization Functions[2m > [0mRound-trip Serialization[2m >[0m[1m should handle round-trip serialization correctly[0m [0m[2m[0.78ms[0m[2m][0m
+[0m
+src/engine/__tests__/transition.test.ts:
+[0m[32m✓[0m[0m[1m transition returns to same coordinates when going back[0m [0m[2m[[1m16.94ms[0m[2m][0m
+[0m[32m✓[0m[0m[1m per-level flavor is restored when revisiting[0m [0m[2m[[1m14.17ms[0m[2m][0m
+[0m[32m✓[0m[0m[1m createInitialGameState creates valid game state[0m [0m[2m[6.83ms[0m[2m][0m
+[0m[32m✓[0m[0m[1m getPlayer returns player entity[0m [0m[2m[6.78ms[0m[2m][0m
+[0m[32m✓[0m[0m[1m updateFov updates discovered tiles[0m [0m[2m[6.99ms[0m[2m][0m
+[0m[32m✓[0m[0m[1m handleTransition with invalid position returns error message[0m [0m[2m[6.05ms[0m[2m][0m
+[0m
+src/engine/__tests__/multiplayer.test.ts:
+[0m[32m✓[0m [0mmultiplayer engine behavior[2m >[0m[1m handleTransition moves party and removes players from stored origin[0m [0m[2m[0.68ms[0m[2m][0m
+[0m[32m✓[0m [0mmultiplayer engine behavior[2m >[0m[1m monsters target the closest player on their turn[0m
+
+[0m[2m1 tests failed:[0m
+[0m[31m✗[0m [0mwebsocket protocol (smoke)[2m >[0m[1m startRun -> join -> broadcast state updates[0m [0m[2m[[1m2014.83ms[0m[2m][0m
+
+[0m[32m 88 pass[0m
+[0m[31m 1 fail[0m
+ 333 expect() calls
+Ran 89 tests across 9 files. [0m[2m[[1m2.29s[0m[2m][0m

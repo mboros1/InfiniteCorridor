@@ -677,7 +677,7 @@ describe('wsHub', () => {
     expect(playerAfter.position.x).toBe(0);
   });
 
-  test('duplicate sockets for same player replace the existing session', async () => {
+  test('duplicate sockets for same player are rejected (no session takeover)', async () => {
     const games = new Map<string, GameState>();
     const hub = createWsHub({
       newRequestId: createIdGenerator('req'),
@@ -732,7 +732,7 @@ describe('wsHub', () => {
     const gameId = (startResp.data as any)?.gameId as string;
     if (!gameId) throw new Error('expected gameId');
 
-    // Join with the same playerId on a second socket; should kick the first session.
+    // Join with the same playerId on a second socket; should be rejected without kicking the first session.
     await hub.message(
       wsB,
       JSON.stringify({
@@ -744,14 +744,97 @@ describe('wsHub', () => {
       })
     );
 
-    drain(wsB);
+    const joinMsgsB = drain(wsB);
+    const joinResp = joinMsgsB.find((m) => m.type === 'response' && m.requestId === 'join-1');
+    if (!joinResp || joinResp.type !== 'response' || joinResp.ok) throw new Error('expected join response error');
+    expect(joinResp.error.code).toBe('ALREADY_LOGGED_IN');
 
-    expect(wsA.closeCalls).toHaveLength(1);
-    expect(wsA.closeCalls[0]?.code).toBe(4000);
-    expect(wsA.closeCalls[0]?.reason).toBe('Session replaced');
-    expect(wsA.data.gameId).toBeUndefined();
-    expect(wsA.data.playerId).toBeUndefined();
-    expect(wsA.data.playerEntityId).toBeUndefined();
+    expect(wsA.closeCalls).toHaveLength(0);
+    expect(wsA.data.gameId).toBe(gameId);
+    expect(wsA.data.playerId).toBe(playerId);
+    expect(wsA.data.playerEntityId).toBe(`p:${playerId}`);
+
+    expect(wsB.data.gameId).toBeUndefined();
+    expect(wsB.data.playerId).toBeUndefined();
+    expect(wsB.data.playerEntityId).toBeUndefined();
+  });
+
+  test('playerId session lock releases on leave', async () => {
+    const games = new Map<string, GameState>();
+    const hub = createWsHub({
+      newRequestId: createIdGenerator('req'),
+      newGameId: createIdGenerator('game'),
+      tickMs: 200,
+      startTickTimers: false,
+      getGame: (id) => games.get(id),
+      setGame: (id, state) => games.set(id, state),
+      loadGameState: (id) => TE.right(O.fromNullable(games.get(id))),
+      persistGameState: (_id, _state) => TE.right(undefined),
+      generateRoomFlavor: async (s) => s,
+      listPlayers: (_limit) => TE.right([]),
+      getPlayerProfile: (_playerId) => TE.right(O.none),
+      getOrCreatePlayerProfile: ({ playerId, playerName }) =>
+        TE.right({
+          playerId,
+          name: playerName ?? `Wanderer-${playerId.slice(0, 6)}`,
+          description: 'A traveler of the infinite corridor.',
+          tokenChar: '@',
+        }),
+      createPlayerProfile: ({ playerId, prompt }) =>
+        TE.right({
+          playerId: playerId ?? '00000000-0000-0000-0000-000000000000',
+          name: 'Player',
+          description: prompt,
+          tokenChar: '@',
+        }),
+      listWorlds: (_params) => TE.right([]),
+      touchWorldPlayer: (_params) => TE.right(undefined),
+      publicErrorBody,
+    });
+
+    const playerId = '00000000-0000-0000-0000-000000000001';
+    const wsA = makeFakeWs();
+    const wsB = makeFakeWs();
+
+    await hub.message(
+      wsA,
+      JSON.stringify({
+        type: 'startRun',
+        requestId: 'start-1',
+        playerId,
+        playerName: 'Alice',
+        themePrompt: 'test',
+        seed: 'seed',
+      })
+    );
+
+    const startMsgsA = drain(wsA);
+    const startResp = startMsgsA.find((m) => m.type === 'response' && m.requestId === 'start-1');
+    if (!startResp || startResp.type !== 'response' || !startResp.ok) throw new Error('expected startRun ok response');
+    const gameId = (startResp.data as any)?.gameId as string;
+    if (!gameId) throw new Error('expected gameId');
+
+    await hub.message(wsA, JSON.stringify({ type: 'leave', requestId: 'leave-1' }));
+    const leaveMsgsA = drain(wsA);
+    const leaveResp = leaveMsgsA.find((m) => m.type === 'response' && m.requestId === 'leave-1');
+    if (!leaveResp || leaveResp.type !== 'response' || !leaveResp.ok) throw new Error('expected leave ok response');
+
+    await hub.message(
+      wsB,
+      JSON.stringify({
+        type: 'join',
+        requestId: 'join-1',
+        gameId,
+        playerId,
+        playerName: 'Alice',
+      })
+    );
+
+    const joinMsgsB = drain(wsB);
+    const joinResp = joinMsgsB.find((m) => m.type === 'response' && m.requestId === 'join-1');
+    if (!joinResp || joinResp.type !== 'response' || !joinResp.ok) throw new Error('expected join ok response');
+    expect(wsB.data.playerId).toBe(playerId);
+    expect(wsB.data.gameId).toBe(gameId);
   });
 
   test('multiple players buffer actions and apply them on the same tick', async () => {

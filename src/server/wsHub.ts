@@ -59,14 +59,7 @@ export function createWsHub(deps: WsHubDeps): WsHub {
   const queuedActionsByGameId = new Map<string, Map<EntityId, Action>>();
   const tickTimersByGameId = new Map<string, ReturnType<typeof setInterval>>();
   const tickingGames = new Set<string>();
-
-  function tryClose(ws: WsLike<WsData>, code?: number, reason?: string): void {
-    try {
-      ws.close?.(code, reason);
-    } catch {
-      // ignore
-    }
-  }
+  const socketByPlayerId = new Map<string, WsLike<WsData>>();
 
   function safeSend(ws: WsLike<WsData>, msg: WsServerMessage): void {
     try {
@@ -76,28 +69,33 @@ export function createWsHub(deps: WsHubDeps): WsHub {
     }
   }
 
+  function claimPlayerSession(
+    ws: WsLike<WsData>,
+    playerId: string
+  ): { ok: true; newlyClaimed: boolean } | { ok: false; error: AppError } {
+    const existing = socketByPlayerId.get(playerId);
+    if (existing && existing !== ws) {
+      return {
+        ok: false,
+        error: appError(APP_ERROR_CODE.AlreadyLoggedIn, 'Already logged in', { context: { playerId } }),
+      };
+    }
+    const newlyClaimed = ws.data.playerId !== playerId;
+    socketByPlayerId.set(playerId, ws);
+    return { ok: true, newlyClaimed };
+  }
+
+  function releasePlayerSession(ws: WsLike<WsData>, playerId: string): void {
+    const existing = socketByPlayerId.get(playerId);
+    if (existing === ws) socketByPlayerId.delete(playerId);
+  }
+
   function subscribeSocket(ws: WsLike<WsData>, gameId: string): void {
     unsubscribeSocket(ws);
     let set = socketsByGameId.get(gameId);
     if (!set) {
       set = new Set();
       socketsByGameId.set(gameId, set);
-    }
-
-    const actorId = ws.data.playerEntityId;
-    if (actorId) {
-      const duplicates: WsLike<WsData>[] = [];
-      for (const other of set) {
-        if (other === ws) continue;
-        if (other.data.playerEntityId === actorId) duplicates.push(other);
-      }
-
-      for (const other of duplicates) {
-        unsubscribeSocket(other);
-        other.data.playerId = undefined;
-        other.data.playerEntityId = undefined;
-        tryClose(other, 4000, 'Session replaced');
-      }
     }
 
     set.add(ws);
@@ -250,6 +248,16 @@ export function createWsHub(deps: WsHubDeps): WsHub {
     try {
       if (msg.type === 'leave') {
         unsubscribeSocket(ws);
+        if (ws.data.playerId) releasePlayerSession(ws, ws.data.playerId);
+        ws.data.playerEntityId = undefined;
+        ws.data.playerId = undefined;
+        safeSend(ws, { type: 'response', requestId, ok: true });
+        return;
+      }
+
+      if (msg.type === 'logout') {
+        unsubscribeSocket(ws);
+        if (ws.data.playerId) releasePlayerSession(ws, ws.data.playerId);
         ws.data.playerEntityId = undefined;
         ws.data.playerId = undefined;
         safeSend(ws, { type: 'response', requestId, ok: true });
@@ -267,49 +275,64 @@ export function createWsHub(deps: WsHubDeps): WsHub {
 
         deps.log?.('WS', 'startRun', { requestId, playerId: msg.playerId });
 
-        const profileResult = await deps.getOrCreatePlayerProfile({ playerId: msg.playerId, playerName: msg.playerName })();
-        if (E.isLeft(profileResult)) {
-          safeSend(ws, { type: 'response', requestId, ok: false, error: deps.publicErrorBody(requestId, profileResult.left) });
-          return;
-        }
-        const profile = profileResult.right;
-
-        const config: WorldConfig = {
-          themePrompt: msg.themePrompt,
-          seed: msg.seed,
-          difficulty: msg.difficulty ?? 'Normal',
-          rulesVersion: msg.rulesVersion ?? '0.1.0',
-        };
-
-        let state = createInitialGameState(config);
-        const ensured = ensurePlayerInGame(state, {
-          playerId: msg.playerId,
-          profile: { name: profile.name, description: profile.description, tokenChar: profile.tokenChar },
-        });
-        state = ensured.state;
-        state = await deps.generateRoomFlavor(state);
-
-        const gameId = deps.newGameId();
-        deps.setGame(gameId, state);
-
-        const persisted = await deps.persistGameState(gameId, state)();
-        if (E.isLeft(persisted)) {
-          safeSend(ws, { type: 'response', requestId, ok: false, error: deps.publicErrorBody(requestId, persisted.left) });
+        const claim = claimPlayerSession(ws, msg.playerId);
+        if (!claim.ok) {
+          safeSend(ws, { type: 'response', requestId, ok: false, error: deps.publicErrorBody(requestId, claim.error) });
           return;
         }
 
-        ws.data.playerId = msg.playerId;
-        ws.data.playerEntityId = ensured.playerEntityId;
-        subscribeSocket(ws, gameId);
+        let committed = false;
+        try {
+          const profileResult = await deps.getOrCreatePlayerProfile({ playerId: msg.playerId, playerName: msg.playerName })();
+          if (E.isLeft(profileResult)) {
+            safeSend(ws, { type: 'response', requestId, ok: false, error: deps.publicErrorBody(requestId, profileResult.left) });
+            return;
+          }
+          const profile = profileResult.right;
 
-        const touched = await deps.touchWorldPlayer({ worldId: gameId, playerId: msg.playerId })();
-        if (E.isLeft(touched)) {
-          deps.log?.('DB', 'touchWorldPlayer failed after startRun', { code: touched.left.code, message: touched.left.message });
+          const config: WorldConfig = {
+            themePrompt: msg.themePrompt,
+            seed: msg.seed,
+            difficulty: msg.difficulty ?? 'Normal',
+            rulesVersion: msg.rulesVersion ?? '0.1.0',
+          };
+
+          let state = createInitialGameState(config);
+          const ensured = ensurePlayerInGame(state, {
+            playerId: msg.playerId,
+            profile: { name: profile.name, description: profile.description, tokenChar: profile.tokenChar },
+          });
+          state = ensured.state;
+          state = await deps.generateRoomFlavor(state);
+
+          const gameId = deps.newGameId();
+          deps.setGame(gameId, state);
+
+          const persisted = await deps.persistGameState(gameId, state)();
+          if (E.isLeft(persisted)) {
+            safeSend(ws, { type: 'response', requestId, ok: false, error: deps.publicErrorBody(requestId, persisted.left) });
+            return;
+          }
+
+          ws.data.playerId = msg.playerId;
+          ws.data.playerEntityId = ensured.playerEntityId;
+          subscribeSocket(ws, gameId);
+          committed = true;
+
+          const touched = await deps.touchWorldPlayer({ worldId: gameId, playerId: msg.playerId })();
+          if (E.isLeft(touched)) {
+            deps.log?.('DB', 'touchWorldPlayer failed after startRun', {
+              code: touched.left.code,
+              message: touched.left.message,
+            });
+          }
+
+          safeSend(ws, { type: 'response', requestId, ok: true, data: { gameId, state } });
+          broadcastState(gameId, state);
+          return;
+        } finally {
+          if (!committed && claim.newlyClaimed) releasePlayerSession(ws, msg.playerId);
         }
-
-        safeSend(ws, { type: 'response', requestId, ok: true, data: { gameId, state } });
-        broadcastState(gameId, state);
-        return;
       }
 
       if (msg.type === 'join') {
@@ -323,54 +346,66 @@ export function createWsHub(deps: WsHubDeps): WsHub {
 
         deps.log?.('WS', 'join', { requestId, gameId: msg.gameId.slice(-8), playerId: msg.playerId });
 
-        let state = deps.getGame(msg.gameId);
-        if (!state) {
-          const loaded = await deps.loadGameState(msg.gameId)();
-          if (E.isLeft(loaded)) {
-            safeSend(ws, { type: 'response', requestId, ok: false, error: deps.publicErrorBody(requestId, loaded.left) });
+        const claim = claimPlayerSession(ws, msg.playerId);
+        if (!claim.ok) {
+          safeSend(ws, { type: 'response', requestId, ok: false, error: deps.publicErrorBody(requestId, claim.error) });
+          return;
+        }
+
+        let committed = false;
+        try {
+          let state = deps.getGame(msg.gameId);
+          if (!state) {
+            const loaded = await deps.loadGameState(msg.gameId)();
+            if (E.isLeft(loaded)) {
+              safeSend(ws, { type: 'response', requestId, ok: false, error: deps.publicErrorBody(requestId, loaded.left) });
+              return;
+            }
+            if (O.isSome(loaded.right)) state = loaded.right.value;
+          }
+
+          if (!state) {
+            const notFound = appError(APP_ERROR_CODE.NotFound, 'Game not found', { context: { gameId: msg.gameId } });
+            safeSend(ws, { type: 'response', requestId, ok: false, error: deps.publicErrorBody(requestId, notFound) });
             return;
           }
-          if (O.isSome(loaded.right)) state = loaded.right.value;
-        }
 
-        if (!state) {
-          const notFound = appError(APP_ERROR_CODE.NotFound, 'Game not found', { context: { gameId: msg.gameId } });
-          safeSend(ws, { type: 'response', requestId, ok: false, error: deps.publicErrorBody(requestId, notFound) });
+          const profileResult = await deps.getOrCreatePlayerProfile({ playerId: msg.playerId, playerName: msg.playerName })();
+          if (E.isLeft(profileResult)) {
+            safeSend(ws, { type: 'response', requestId, ok: false, error: deps.publicErrorBody(requestId, profileResult.left) });
+            return;
+          }
+          const profile = profileResult.right;
+
+          const ensured = ensurePlayerInGame(state, {
+            playerId: msg.playerId,
+            profile: { name: profile.name, description: profile.description, tokenChar: profile.tokenChar },
+          });
+          const newState = ensured.state;
+          deps.setGame(msg.gameId, newState);
+
+          const persisted = await deps.persistGameState(msg.gameId, newState)();
+          if (E.isLeft(persisted)) {
+            safeSend(ws, { type: 'response', requestId, ok: false, error: deps.publicErrorBody(requestId, persisted.left) });
+            return;
+          }
+
+          ws.data.playerId = msg.playerId;
+          ws.data.playerEntityId = ensured.playerEntityId;
+          subscribeSocket(ws, msg.gameId);
+          committed = true;
+
+          const touched = await deps.touchWorldPlayer({ worldId: msg.gameId, playerId: msg.playerId })();
+          if (E.isLeft(touched)) {
+            deps.log?.('DB', 'touchWorldPlayer failed after join', { code: touched.left.code, message: touched.left.message });
+          }
+
+          safeSend(ws, { type: 'response', requestId, ok: true, data: { state: newState } });
+          broadcastState(msg.gameId, newState);
           return;
+        } finally {
+          if (!committed && claim.newlyClaimed) releasePlayerSession(ws, msg.playerId);
         }
-
-        const profileResult = await deps.getOrCreatePlayerProfile({ playerId: msg.playerId, playerName: msg.playerName })();
-        if (E.isLeft(profileResult)) {
-          safeSend(ws, { type: 'response', requestId, ok: false, error: deps.publicErrorBody(requestId, profileResult.left) });
-          return;
-        }
-        const profile = profileResult.right;
-
-        const ensured = ensurePlayerInGame(state, {
-          playerId: msg.playerId,
-          profile: { name: profile.name, description: profile.description, tokenChar: profile.tokenChar },
-        });
-        const newState = ensured.state;
-        deps.setGame(msg.gameId, newState);
-
-        const persisted = await deps.persistGameState(msg.gameId, newState)();
-        if (E.isLeft(persisted)) {
-          safeSend(ws, { type: 'response', requestId, ok: false, error: deps.publicErrorBody(requestId, persisted.left) });
-          return;
-        }
-
-        ws.data.playerId = msg.playerId;
-        ws.data.playerEntityId = ensured.playerEntityId;
-        subscribeSocket(ws, msg.gameId);
-
-        const touched = await deps.touchWorldPlayer({ worldId: msg.gameId, playerId: msg.playerId })();
-        if (E.isLeft(touched)) {
-          deps.log?.('DB', 'touchWorldPlayer failed after join', { code: touched.left.code, message: touched.left.message });
-        }
-
-        safeSend(ws, { type: 'response', requestId, ok: true, data: { state: newState } });
-        broadcastState(msg.gameId, newState);
-        return;
       }
 
       if (msg.type === 'action') {
@@ -382,63 +417,75 @@ export function createWsHub(deps: WsHubDeps): WsHub {
           return;
         }
 
-        let state = deps.getGame(msg.gameId);
-        if (!state) {
-          const loaded = await deps.loadGameState(msg.gameId)();
-          if (E.isLeft(loaded)) {
-            safeSend(ws, { type: 'response', requestId, ok: false, error: deps.publicErrorBody(requestId, loaded.left) });
+        const claim = claimPlayerSession(ws, msg.playerId);
+        if (!claim.ok) {
+          safeSend(ws, { type: 'response', requestId, ok: false, error: deps.publicErrorBody(requestId, claim.error) });
+          return;
+        }
+
+        let committed = false;
+        try {
+          let state = deps.getGame(msg.gameId);
+          if (!state) {
+            const loaded = await deps.loadGameState(msg.gameId)();
+            if (E.isLeft(loaded)) {
+              safeSend(ws, { type: 'response', requestId, ok: false, error: deps.publicErrorBody(requestId, loaded.left) });
+              return;
+            }
+            if (O.isSome(loaded.right)) state = loaded.right.value;
+          }
+
+          if (!state) {
+            const notFound = appError(APP_ERROR_CODE.NotFound, 'Game not found', { context: { gameId: msg.gameId } });
+            safeSend(ws, { type: 'response', requestId, ok: false, error: deps.publicErrorBody(requestId, notFound) });
             return;
           }
-          if (O.isSome(loaded.right)) state = loaded.right.value;
-        }
 
-        if (!state) {
-          const notFound = appError(APP_ERROR_CODE.NotFound, 'Game not found', { context: { gameId: msg.gameId } });
-          safeSend(ws, { type: 'response', requestId, ok: false, error: deps.publicErrorBody(requestId, notFound) });
-          return;
-        }
+          const profileResult = await deps.getOrCreatePlayerProfile({ playerId: msg.playerId, playerName: msg.playerName })();
+          if (E.isLeft(profileResult)) {
+            safeSend(ws, { type: 'response', requestId, ok: false, error: deps.publicErrorBody(requestId, profileResult.left) });
+            return;
+          }
+          const profile = profileResult.right;
 
-        const profileResult = await deps.getOrCreatePlayerProfile({ playerId: msg.playerId, playerName: msg.playerName })();
-        if (E.isLeft(profileResult)) {
-          safeSend(ws, { type: 'response', requestId, ok: false, error: deps.publicErrorBody(requestId, profileResult.left) });
-          return;
-        }
-        const profile = profileResult.right;
-
-        const ensured = ensurePlayerInGame(state, {
-          playerId: msg.playerId,
-          profile: { name: profile.name, description: profile.description, tokenChar: profile.tokenChar },
-        });
-        state = ensured.state;
-        ws.data.playerId = msg.playerId;
-        ws.data.playerEntityId = ensured.playerEntityId;
-        subscribeSocket(ws, msg.gameId);
-
-        const player = getPlayerById(state, ensured.playerEntityId);
-        if (!player) {
-          const missing = appError(APP_ERROR_CODE.Unknown, 'Player not found in game state', {
-            context: { gameId: msg.gameId, playerId: msg.playerId },
+          const ensured = ensurePlayerInGame(state, {
+            playerId: msg.playerId,
+            profile: { name: profile.name, description: profile.description, tokenChar: profile.tokenChar },
           });
-          safeSend(ws, { type: 'response', requestId, ok: false, error: deps.publicErrorBody(requestId, missing) });
-          return;
-        }
+          state = ensured.state;
+          ws.data.playerId = msg.playerId;
+          ws.data.playerEntityId = ensured.playerEntityId;
+          subscribeSocket(ws, msg.gameId);
+          committed = true;
 
-        if (msg.action.kind === 'Command') {
-          const newState = applyCommandForActor(state, player.id, msg.action.text);
-          deps.setGame(msg.gameId, newState);
-          const persisted = await deps.persistGameState(msg.gameId, newState)();
-          if (E.isLeft(persisted)) {
-            safeSend(ws, { type: 'response', requestId, ok: false, error: deps.publicErrorBody(requestId, persisted.left) });
+          const player = getPlayerById(state, ensured.playerEntityId);
+          if (!player) {
+            const missing = appError(APP_ERROR_CODE.Unknown, 'Player not found in game state', {
+              context: { gameId: msg.gameId, playerId: msg.playerId },
+            });
+            safeSend(ws, { type: 'response', requestId, ok: false, error: deps.publicErrorBody(requestId, missing) });
             return;
           }
-          safeSend(ws, { type: 'response', requestId, ok: true });
-          broadcastState(msg.gameId, newState);
-          return;
-        }
 
-        enqueueAction(msg.gameId, player.id, msg.action);
-        safeSend(ws, { type: 'response', requestId, ok: true });
-        return;
+          if (msg.action.kind === 'Command') {
+            const newState = applyCommandForActor(state, player.id, msg.action.text);
+            deps.setGame(msg.gameId, newState);
+            const persisted = await deps.persistGameState(msg.gameId, newState)();
+            if (E.isLeft(persisted)) {
+              safeSend(ws, { type: 'response', requestId, ok: false, error: deps.publicErrorBody(requestId, persisted.left) });
+              return;
+            }
+            safeSend(ws, { type: 'response', requestId, ok: true });
+            broadcastState(msg.gameId, newState);
+            return;
+          }
+
+          enqueueAction(msg.gameId, player.id, msg.action);
+          safeSend(ws, { type: 'response', requestId, ok: true });
+          return;
+        } finally {
+          if (!committed && claim.newlyClaimed) releasePlayerSession(ws, msg.playerId);
+        }
       }
 
       if (msg.type === 'listPlayers') {
@@ -496,6 +543,9 @@ export function createWsHub(deps: WsHubDeps): WsHub {
 
   function close(ws: WsLike<WsData>): void {
     unsubscribeSocket(ws);
+    if (ws.data.playerId) releasePlayerSession(ws, ws.data.playerId);
+    ws.data.playerId = undefined;
+    ws.data.playerEntityId = undefined;
   }
 
   return { message, close, broadcastState, tickGame };

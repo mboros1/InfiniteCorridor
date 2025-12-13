@@ -37,6 +37,11 @@ export const WsLeaveSchema = z.object({
   gameId: z.string().min(1).optional(),
 });
 
+export const WsLogoutSchema = z.object({
+  type: z.literal('logout'),
+  requestId: RequestIdSchema,
+});
+
 export const WsActionSchema = z.object({
   type: z.literal('action'),
   requestId: RequestIdSchema,
@@ -77,6 +82,7 @@ export const WsClientMessageSchema = z.discriminatedUnion('type', [
   WsJoinSchema,
   WsLeaveSchema,
   WsActionSchema,
+  WsLogoutSchema,
   WsListPlayersSchema,
   WsGetPlayerProfileSchema,
   WsCreatePlayerProfileSchema,
