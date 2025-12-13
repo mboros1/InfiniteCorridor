@@ -25,6 +25,8 @@ export type AppError = Error & {
   expose?: boolean;
 };
 
+const APP_ERROR_CODES: ReadonlySet<string> = new Set(Object.values(APP_ERROR_CODE));
+
 export function appError(
   code: AppErrorCode,
   message: string,
@@ -41,7 +43,10 @@ export function appError(
 }
 
 export function isAppError(error: unknown): error is AppError {
-  return error instanceof Error && 'code' in error;
+  if (!(error instanceof Error)) return false;
+  if (error.name !== 'AppError') return false;
+  const code = (error as Partial<AppError>).code;
+  return typeof code === 'string' && APP_ERROR_CODES.has(code);
 }
 
 export function toAppError(
