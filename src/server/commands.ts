@@ -1,5 +1,5 @@
-import type { GameState, Player, Monster, Item } from '../domain/model.js';
-import { addMessage } from '../engine/game.js';
+import type { EntityId, GameState, Player, Monster, Item } from '../domain/model.js';
+import { addMessage, getPlayerById } from '../engine/game.js';
 
 export type ParsedCommand =
   | { kind: 'Empty' }
@@ -66,11 +66,12 @@ function listItems(state: GameState): Item[] {
   return state.currentLevel.entities.filter((e): e is Item => e.kind === 'Item');
 }
 
-function describeLook(state: GameState): GameState {
-  const base = state.roomDescription ?? 'You look around.';
+function describeLook(state: GameState, actorId: EntityId): GameState {
+  const actorName = getPlayerById(state, actorId)?.name ?? 'Someone';
+  const base = state.roomDescription ?? `${actorName} looks around.`;
   let next = addMessage(state, base, 'system');
 
-  const players = listPlayers(state).map((p) => (p.id === state.playerId ? `${p.name} (you)` : p.name));
+  const players = listPlayers(state).map((p) => p.name);
   const monsters = listMonsters(state).map((m) => state.enemyFlavors[m.templateId]?.name ?? 'Enemy');
   const items = listItems(state).map((i) => i.name);
 
@@ -80,7 +81,7 @@ function describeLook(state: GameState): GameState {
 }
 
 function describeWho(state: GameState): GameState {
-  const players = listPlayers(state).map((p) => (p.id === state.playerId ? `${p.name} (you)` : p.name));
+  const players = listPlayers(state).map((p) => p.name);
   return addMessage(state, `Players here: ${summarizeCounts(players)}.`, 'system');
 }
 
@@ -94,6 +95,10 @@ function describeUnknown(state: GameState, command: string): GameState {
 }
 
 export function applyCommand(state: GameState, text: string): GameState {
+  return applyCommandForActor(state, state.playerId, text);
+}
+
+export function applyCommandForActor(state: GameState, actorId: EntityId, text: string): GameState {
   const parsed = parseCommandText(text);
   switch (parsed.kind) {
     case 'Empty':
@@ -101,13 +106,12 @@ export function applyCommand(state: GameState, text: string): GameState {
     case 'Help':
       return describeHelp(state);
     case 'Say':
-      return addMessage(state, `You say: ${parsed.message}`, 'chat');
+      return addMessage(state, `${getPlayerById(state, actorId)?.name ?? 'Someone'}: ${parsed.message}`, 'chat');
     case 'Look':
-      return describeLook(state);
+      return describeLook(state, actorId);
     case 'Who':
       return describeWho(state);
     case 'Unknown':
       return describeUnknown(state, parsed.command);
   }
 }
-

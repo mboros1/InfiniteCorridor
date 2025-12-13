@@ -6,12 +6,23 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk';
-import type { AIAdapter, RoomFlavorRequest, RoomFlavorResponse } from './contracts.js';
+import type {
+  AIAdapter,
+  PlayerProfileRequest,
+  PlayerProfileResponse,
+  RoomFlavorRequest,
+  RoomFlavorResponse,
+} from './contracts.js';
 import {
+  buildPlayerProfilePrompt,
+  buildPlayerProfileRepairPrompt,
   buildRoomFlavorPrompt,
   buildRoomFlavorRepairPrompt,
+  createFallbackPlayerProfile,
   createFallbackResponse,
+  parsePlayerProfileResponseText,
   parseRoomFlavorResponseText,
+  shouldAttemptPlayerProfileRepair,
   shouldAttemptRoomFlavorRepair,
 } from './utils.js';
 import { consoleLogger, type Logger } from '../utils/logger.js';
@@ -33,29 +44,28 @@ export function createAnthropicAdapter(config: AnthropicConfig): AIAdapter {
   // Options: claude-3-5-haiku-20241022, claude-sonnet-4-20250514, claude-opus-4-20250514
   const model = config.model ?? 'claude-haiku-4-5-20251001';
 
+  async function callClaude(prompt: string): Promise<string> {
+    const message = await client.messages.create({
+      model,
+      max_tokens: 1500,
+      messages: [
+        {
+          role: 'user',
+          content: prompt,
+        },
+      ],
+    });
+
+    const textBlock = message.content.find((block) => block.type === 'text');
+    if (!textBlock || textBlock.type !== 'text') {
+      throw new Error('No text response from Claude');
+    }
+
+    return textBlock.text;
+  }
 
   return {
     async generateRoomFlavor(request: RoomFlavorRequest): Promise<RoomFlavorResponse> {
-      async function callClaude(prompt: string): Promise<string> {
-        const message = await client.messages.create({
-          model,
-          max_tokens: 1500,
-          messages: [
-            {
-              role: 'user',
-              content: prompt,
-            },
-          ],
-        });
-
-        const textBlock = message.content.find((block) => block.type === 'text');
-        if (!textBlock || textBlock.type !== 'text') {
-          throw new Error('No text response from Claude');
-        }
-
-        return textBlock.text;
-      }
-
       const userPrompt = buildRoomFlavorPrompt(request);
       const content = await callClaude(userPrompt);
 
@@ -95,6 +105,48 @@ export function createAnthropicAdapter(config: AnthropicConfig): AIAdapter {
         context: parsedResponse.left.context,
       });
       return createFallbackResponse(request);
+    },
+
+    async generatePlayerProfile(request: PlayerProfileRequest): Promise<PlayerProfileResponse> {
+      const userPrompt = buildPlayerProfilePrompt(request);
+      const content = await callClaude(userPrompt);
+
+      const parsedResponse = parsePlayerProfileResponseText(content);
+      if (E.isRight(parsedResponse)) return parsedResponse.right;
+
+      if (shouldAttemptPlayerProfileRepair(parsedResponse.left)) {
+        logger.warn('Claude player profile invalid; attempting one repair pass', {
+          code: parsedResponse.left.code,
+          message: parsedResponse.left.message,
+        });
+
+        try {
+          const repairPrompt = buildPlayerProfileRepairPrompt({
+            previousText: content,
+            error: parsedResponse.left,
+          });
+          const repairedContent = await callClaude(repairPrompt);
+          const repaired = parsePlayerProfileResponseText(repairedContent);
+          if (E.isRight(repaired)) return repaired.right;
+
+          logger.error('Claude player profile repair failed; falling back', {
+            code: repaired.left.code,
+            message: repaired.left.message,
+            context: repaired.left.context,
+          });
+          return createFallbackPlayerProfile(request);
+        } catch (cause) {
+          logger.error('Claude player profile repair request failed; falling back', { cause });
+          return createFallbackPlayerProfile(request);
+        }
+      }
+
+      logger.error('Claude player profile parse/validation failed; falling back', {
+        code: parsedResponse.left.code,
+        message: parsedResponse.left.message,
+        context: parsedResponse.left.context,
+      });
+      return createFallbackPlayerProfile(request);
     },
   };
 }

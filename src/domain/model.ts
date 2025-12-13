@@ -68,6 +68,8 @@ export interface BaseEntity<K extends EntityKind> {
 // Player has stats and a name. You can extend this with DnD-style attributes later.
 export interface Player extends BaseEntity<'Player'> {
   name: string;
+  description: string;
+  tokenChar: string;
   hp: number;
   maxHp: number;
   // Simple stats to start. You can grow this as needed.

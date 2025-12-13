@@ -15,13 +15,15 @@ interface GameMapProps {
   state: GameState;
   enemyFlavors: Record<string, EnemyFlavor>;
   tileFlavors?: Partial<Record<TileKind, TileFlavor>>;
+  playerEntityId?: string;
   viewWidth: number;
   viewHeight: number;
 }
 
 // Get player from state
-function getPlayer(state: GameState) {
-  const entity = state.currentLevel.entities.find((e) => e.id === state.playerId);
+function getPlayer(state: GameState, playerEntityId?: string) {
+  const id = playerEntityId ?? state.playerId;
+  const entity = state.currentLevel.entities.find((e) => e.id === id);
   return entity?.kind === 'Player' ? entity : undefined;
 }
 
@@ -57,7 +59,7 @@ function getCellData(
 
   if (entity) {
     if (entity.kind === 'Player') {
-      return { char: '@', fg: ENTITY_COLORS.player };
+      return { char: entity.tokenChar || '@', fg: ENTITY_COLORS.player };
     }
 
     if (entity.kind === 'Monster') {
@@ -135,9 +137,9 @@ const MapRow: React.FC<{ cells: CellData[] }> = ({ cells }) => {
  * Main GameMap component.
  * Renders a viewport centered on the player.
  */
-export const GameMap: React.FC<GameMapProps> = ({ state, enemyFlavors, tileFlavors, viewWidth, viewHeight }) => {
+export const GameMap: React.FC<GameMapProps> = ({ state, enemyFlavors, tileFlavors, playerEntityId, viewWidth, viewHeight }) => {
   const level = state.currentLevel;
-  const player = getPlayer(state);
+  const player = getPlayer(state, playerEntityId);
 
   // Calculate viewport centered on player
   const centerX = player?.position.x ?? Math.floor(level.width / 2);

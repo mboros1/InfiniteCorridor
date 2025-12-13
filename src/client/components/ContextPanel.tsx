@@ -13,12 +13,14 @@ import { ENTITY_COLORS } from '../../domain/tiles.js';
 
 interface ContextPanelProps {
   state: GameState;
+  playerEntityId?: string;
   width?: number;
 }
 
 // Get player from state
-function getPlayer(state: GameState) {
-  const entity = state.currentLevel.entities.find((e) => e.id === state.playerId);
+function getPlayer(state: GameState, playerEntityId?: string) {
+  const id = playerEntityId ?? state.playerId;
+  const entity = state.currentLevel.entities.find((e) => e.id === id);
   return entity?.kind === 'Player' ? entity : undefined;
 }
 
@@ -250,8 +252,8 @@ const DirectionLine: React.FC<{
   );
 };
 
-export const ContextPanel: React.FC<ContextPanelProps> = ({ state, width = 30 }) => {
-  const player = getPlayer(state);
+export const ContextPanel: React.FC<ContextPanelProps> = ({ state, playerEntityId, width = 30 }) => {
+  const player = getPlayer(state, playerEntityId);
 
   if (!player) {
     return (

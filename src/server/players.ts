@@ -4,8 +4,16 @@ import { playerEntityId } from '../domain/ids.js';
 import { addMessage, getEntityAt, getTile, updateFov } from '../engine/game.js';
 import { CONFIG } from '../config/index.js';
 
+export interface EnsurePlayerProfile {
+  name: string;
+  description: string;
+  tokenChar: string;
+}
+
 export interface EnsurePlayerOptions {
   playerId: string;
+  profile?: EnsurePlayerProfile;
+  // Legacy/interop: prefer `profile`, but accept a name override if present.
   playerName?: string;
 }
 
@@ -70,6 +78,8 @@ function defaultPlayer(name: string, position: Position, id: EntityId): Player {
     id,
     kind: 'Player',
     name,
+    description: 'A traveler of the infinite corridor.',
+    tokenChar: '@',
     position,
     hp: 20,
     maxHp: 20,
@@ -82,17 +92,23 @@ function defaultPlayer(name: string, position: Position, id: EntityId): Player {
   };
 }
 
-function updatePlayerNameIfProvided(player: Player, playerName?: string): Player {
-  const name = playerName?.trim();
-  if (!name) return player;
-  return { ...player, name };
+function applyProfileIfProvided(player: Player, options: EnsurePlayerOptions): Player {
+  const name = options.profile?.name ?? options.playerName?.trim();
+  const description = options.profile?.description;
+  const tokenChar = options.profile?.tokenChar;
+
+  let updated = player;
+  if (name && name !== updated.name) updated = { ...updated, name };
+  if (description && description !== updated.description) updated = { ...updated, description };
+  if (tokenChar && tokenChar !== updated.tokenChar) updated = { ...updated, tokenChar };
+  return updated;
 }
 
-function replaceEntityIdAndName(level: LevelState, fromId: EntityId, toId: EntityId, playerName?: string): LevelState {
+function replaceEntityIdAndProfile(level: LevelState, fromId: EntityId, toId: EntityId, options: EnsurePlayerOptions): LevelState {
   const entities = level.entities.map((e) => {
     if (e.id !== fromId) return e;
     if (e.kind !== 'Player') return e;
-    return updatePlayerNameIfProvided({ ...e, id: toId }, playerName);
+    return applyProfileIfProvided({ ...e, id: toId }, options);
   });
   return { ...level, entities };
 }
@@ -136,7 +152,7 @@ export function ensurePlayerInGame(state: GameState, options: EnsurePlayerOption
   ) as Player | undefined;
 
   if (existing) {
-    const updated = updatePlayerNameIfProvided(existing, options.playerName);
+    const updated = applyProfileIfProvided(existing, options);
     if (updated === existing) return { state, playerEntityId: desiredEntityId };
 
     const updatedLevel = upsertPlayerEntity(currentLevel, updated);
@@ -151,10 +167,11 @@ export function ensurePlayerInGame(state: GameState, options: EnsurePlayerOption
     players.length === 1 &&
     players[0] &&
     players[0].id === state.playerId &&
+    !state.playerId.startsWith('p:') &&
     state.playerId !== desiredEntityId;
 
   if (isLegacyBootstrap) {
-    const remappedLevel = replaceEntityIdAndName(currentLevel, state.playerId, desiredEntityId, options.playerName);
+    const remappedLevel = replaceEntityIdAndProfile(currentLevel, state.playerId, desiredEntityId, options);
     const remappedState = syncCurrentLevelToWorld({ ...state, playerId: desiredEntityId }, remappedLevel);
     return { state: remappedState, playerEntityId: desiredEntityId };
   }
@@ -168,8 +185,8 @@ export function ensurePlayerInGame(state: GameState, options: EnsurePlayerOption
     };
   }
 
-  const name = options.playerName?.trim() || `Wanderer-${options.playerId.slice(0, 6)}`;
-  const newPlayer = defaultPlayer(name, spawnPos, desiredEntityId);
+  const name = options.profile?.name ?? options.playerName?.trim() ?? `Wanderer-${options.playerId.slice(0, 6)}`;
+  const newPlayer = applyProfileIfProvided(defaultPlayer(name, spawnPos, desiredEntityId), options);
 
   const withPlayer = upsertPlayerEntity(currentLevel, newPlayer);
   const withFov = updateFov(withPlayer, spawnPos, CONFIG.gameplay.playerFovRadius);
@@ -178,4 +195,3 @@ export function ensurePlayerInGame(state: GameState, options: EnsurePlayerOption
 
   return { state: next, playerEntityId: desiredEntityId };
 }
-

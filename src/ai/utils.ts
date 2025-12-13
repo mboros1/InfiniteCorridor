@@ -5,7 +5,7 @@
 
 import { z } from 'zod';
 import stringWidth from 'string-width';
-import type { RoomFlavorRequest, RoomFlavorResponse } from './contracts.js';
+import type { PlayerProfileRequest, PlayerProfileResponse, RoomFlavorRequest, RoomFlavorResponse } from './contracts.js';
 import type { EnemyFlavor, TileFlavor, TileKind } from '../domain/model.js';
 import { TILE_DATA, TILE_DESCRIPTIONS } from '../domain/tiles.js';
 import type { Logger } from '../utils/logger.js';
@@ -18,12 +18,12 @@ const LINE_BREAK_REGEX = /[\n\r\u2028\u2029]/;
 const UNICODE_OTHER_REGEX = /\p{C}/u;
 const WIDE_BUT_ACCEPTABLE_DISPLAY_CHARS = new Set(['♣', '♠', '♥', '♦']);
 
-export type RoomFlavorValidationIssue = {
+export type AiValidationIssue = {
   path: string;
   message: string;
 };
 
-function formatZodIssues(error: z.ZodError): RoomFlavorValidationIssue[] {
+function formatZodIssues(error: z.ZodError): AiValidationIssue[] {
   return error.issues.map((issue) => ({
     path: issue.path.join('.'),
     message: issue.message,
@@ -56,12 +56,13 @@ function isDisplayChar(value: string): boolean {
   return false;
 }
 
-const SingleLineTextSchema = z
-  .string()
-  .min(1)
-  .refine(isSingleLineSafeText, {
+function singleLineText(maxLen: number) {
+  return z.string().min(1).max(maxLen).refine(isSingleLineSafeText, {
     message: 'Must be single-line and must not include control/format characters',
   });
+}
+
+const SingleLineTextSchema = singleLineText(500);
 
 const DisplayCharSchema = z.string().refine(isDisplayChar, {
   message: 'Must be a single, non-whitespace, single-column display character (no emoji)',
@@ -88,8 +89,14 @@ const RoomFlavorResponseSchema = z.object({
   tileFlavors: z.record(z.string(), TileFlavorSchema),
 });
 
+const PlayerProfileResponseSchema: z.ZodType<PlayerProfileResponse> = z.object({
+  name: singleLineText(50),
+  description: singleLineText(200),
+  tokenChar: DisplayCharSchema,
+});
+
 // Export schemas for use in adapters
-export { RoomFlavorResponseSchema };
+export { RoomFlavorResponseSchema, PlayerProfileResponseSchema };
 
 export function buildRoomFlavorPrompt(request: RoomFlavorRequest): string {
   const { context, level, enemyTemplates, tileTypesPresent } = request;
@@ -155,6 +162,26 @@ Theme interpretation examples:
 - Forest: TallObstacle="♣" (tree), OpenGround="." (grass)
 - Space station: TallObstacle="┃" (pillar), OpenGround="░" (grating)
 - Candy land: TallObstacle="♠" (lollipop), Transition="◊" (candy portal)
+
+Respond with ONLY valid JSON, no markdown.`;
+}
+
+export function buildPlayerProfilePrompt(request: PlayerProfileRequest): string {
+  return `You are generating a player character profile for a terminal roguelike.
+
+The player wrote this character prompt:
+"${request.prompt}"
+
+Return ONLY valid JSON with this exact structure:
+{
+  "name": "Character name (single line, <= 50 chars)",
+  "description": "Short description (single line, <= 200 chars)",
+  "tokenChar": "@"
+}
+
+Hard constraints:
+- All strings must be single-line (no \\n \\r U+2028 U+2029) and must not include Unicode \\p{C} characters.
+- tokenChar must be exactly 1 grapheme AND exactly 1 terminal column wide (no emoji). Use simple glyphs like "@", "&", "†", "§", "∆", "◊", "♣".
 
 Respond with ONLY valid JSON, no markdown.`;
 }
@@ -235,6 +262,68 @@ export function parseRoomFlavorResponseText(
   });
 }
 
+function normalizePlayerProfileResponse(parsed: unknown): unknown {
+  if (!parsed || typeof parsed !== 'object') return parsed;
+  const obj = parsed as Record<string, unknown>;
+
+  const tokenCharCandidate =
+    (typeof obj.tokenChar === 'string' && obj.tokenChar) ||
+    (typeof obj.char === 'string' && obj.char) ||
+    undefined;
+
+  const tokenObj = obj.token && typeof obj.token === 'object' ? (obj.token as Record<string, unknown>) : undefined;
+  const tokenCharFromToken =
+    tokenObj && typeof tokenObj.char === 'string'
+      ? tokenObj.char
+      : tokenObj && typeof tokenObj.glyph === 'string'
+        ? tokenObj.glyph
+        : undefined;
+
+  return {
+    ...obj,
+    tokenChar: tokenCharCandidate ?? tokenCharFromToken ?? obj.tokenChar,
+  };
+}
+
+export function parsePlayerProfileResponseText(
+  content: string
+): E.Either<AppError, PlayerProfileResponse> {
+  if (!content.trim()) {
+    return E.left(appError(APP_ERROR_CODE.AiResponseEmpty, 'AI response was empty'));
+  }
+
+  const cleaned = cleanAiJsonText(content);
+  const parsed = E.tryCatch(
+    () => JSON.parse(cleaned) as unknown,
+    (cause) =>
+      appError(APP_ERROR_CODE.AiResponseParseFailed, 'Failed to parse AI JSON response', {
+        cause,
+        context: {
+          contentPreview: contentPreview(content),
+        },
+      })
+  );
+  if (E.isLeft(parsed)) return parsed;
+
+  const normalized = normalizePlayerProfileResponse(parsed.right);
+  const result = PlayerProfileResponseSchema.safeParse(normalized);
+  if (!result.success) {
+    const validationIssues = formatZodIssues(result.error);
+    return E.left(
+      appError(APP_ERROR_CODE.AiResponseInvalid, 'AI response failed schema validation', {
+        cause: result.error,
+        context: {
+          contentPreview: contentPreview(content),
+          validationErrors: result.error.format(),
+          validationIssues,
+        },
+      })
+    );
+  }
+
+  return E.right(result.data);
+}
+
 function truncateForPrompt(text: string, maxLen = 8000): string {
   if (text.length <= maxLen) return text;
   return text.slice(0, maxLen) + '\n...<truncated>';
@@ -246,7 +335,7 @@ export function shouldAttemptRoomFlavorRepair(error: AppError): boolean {
 
 export function buildRoomFlavorRepairPrompt(params: { previousText: string; error: AppError }): string {
   const issuesRaw = params.error.context?.validationIssues;
-  const issues = Array.isArray(issuesRaw) ? (issuesRaw as RoomFlavorValidationIssue[]) : [];
+  const issues = Array.isArray(issuesRaw) ? (issuesRaw as AiValidationIssue[]) : [];
 
   const issueLines =
     issues.length > 0
@@ -268,6 +357,53 @@ ${issueLines}
 Previous JSON:
 ${previousJsonText}
 `;
+}
+
+export function shouldAttemptPlayerProfileRepair(error: AppError): boolean {
+  return error.code === APP_ERROR_CODE.AiResponseParseFailed || error.code === APP_ERROR_CODE.AiResponseInvalid;
+}
+
+export function buildPlayerProfileRepairPrompt(params: { previousText: string; error: AppError }): string {
+  const issuesRaw = params.error.context?.validationIssues;
+  const issues = Array.isArray(issuesRaw) ? (issuesRaw as AiValidationIssue[]) : [];
+
+  const issueLines =
+    issues.length > 0
+      ? issues.map((issue) => `- ${issue.path || '(root)'}: ${issue.message}`).join('\n')
+      : `- (root): ${params.error.message}`;
+
+  const previousJsonText = truncateForPrompt(cleanAiJsonText(params.previousText));
+
+  return `The JSON you returned failed validation. Fix it by changing as few fields as possible.
+Return ONLY the corrected JSON object.
+
+Hard constraints:
+- All strings must be single-line (no \\n \\r U+2028 U+2029) and must not include Unicode \\p{C} characters.
+- tokenChar must be exactly 1 grapheme AND exactly 1 terminal column wide (no emoji). Use simple glyphs like "@", "&", "†", "§", "∆", "◊", "♣".
+
+Validation issues:
+${issueLines}
+
+Previous JSON:
+${previousJsonText}
+`;
+}
+
+function sanitizeSingleLine(value: string): string {
+  return value.replace(LINE_BREAK_REGEX, ' ').replace(UNICODE_OTHER_REGEX, '').replace(/\s+/g, ' ').trim();
+}
+
+export function createFallbackPlayerProfile(request: PlayerProfileRequest): PlayerProfileResponse {
+  const cleanedPrompt = sanitizeSingleLine(request.prompt);
+  const description = cleanedPrompt ? cleanedPrompt.slice(0, 200) : 'A traveler of the infinite corridor.';
+  const nameBase = cleanedPrompt ? cleanedPrompt.split(/\s+/).slice(0, 3).join(' ') : 'Wanderer';
+  const name = sanitizeSingleLine(nameBase).slice(0, 50) || 'Wanderer';
+
+  return {
+    name,
+    description: description || 'A traveler of the infinite corridor.',
+    tokenChar: '@',
+  };
 }
 
 /**

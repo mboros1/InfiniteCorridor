@@ -79,9 +79,17 @@ export function getEntityAt(level: LevelState, x: number, y: number): Entity | u
   return level.entities.find((e) => e.position.x === x && e.position.y === y);
 }
 
-export function getPlayer(state: GameState): Player | undefined {
-  const entity = state.currentLevel.entities.find((e) => e.id === state.playerId);
+export function getPlayerById(state: GameState, playerId: EntityId): Player | undefined {
+  const entity = state.currentLevel.entities.find((e) => e.id === playerId);
   return entity?.kind === 'Player' ? entity : undefined;
+}
+
+export function listPlayers(state: GameState): Player[] {
+  return state.currentLevel.entities.filter((e): e is Player => e.kind === 'Player');
+}
+
+export function getPlayer(state: GameState): Player | undefined {
+  return getPlayerById(state, state.playerId);
 }
 
 // ---- Leveling & XP Helpers ----
@@ -143,11 +151,11 @@ function awardXp(state: GameState, playerId: EntityId, amount: number): GameStat
     currentLevel: { ...level, entities: updatedEntities },
   };
 
-  resultState = addMessage(resultState, `You gain ${amount} XP.`, 'info');
+  resultState = addMessage(resultState, `${player.name} gains ${amount} XP.`, 'info');
 
   for (let i = 0; i < levelsGained; i++) {
     const newLevel = player.level + i + 1;
-    resultState = addMessage(resultState, `You reached level ${newLevel}!`, 'level');
+    resultState = addMessage(resultState, `${player.name} reached level ${newLevel}!`, 'level');
   }
 
   return resultState;
@@ -160,22 +168,19 @@ function applyRegen(state: GameState): GameState {
   // Only regen on turns divisible by REGEN_EVERY_TURNS
   if ((state.turn + 1) % REGEN_EVERY_TURNS !== 0) return state;
 
-  const player = getPlayer(state);
-  if (!player || player.hp <= 0 || player.hp >= player.maxHp) return state;
-
-  const newHp = Math.min(player.maxHp, player.hp + REGEN_AMOUNT);
   const level = state.currentLevel;
-  const playerIdx = level.entities.findIndex((e) => e.id === state.playerId);
+  let changed = false;
+  const entities = level.entities.map((e) => {
+    if (e.kind !== 'Player') return e;
+    if (e.hp <= 0 || e.hp >= e.maxHp) return e;
+    changed = true;
+    return { ...e, hp: Math.min(e.maxHp, e.hp + REGEN_AMOUNT) };
+  });
 
-  if (playerIdx === -1) return state;
-
-  const updatedPlayer: Player = { ...player, hp: newHp };
-  const updatedEntities = [...level.entities];
-  updatedEntities[playerIdx] = updatedPlayer;
-
+  if (!changed) return state;
   return {
     ...state,
-    currentLevel: { ...level, entities: updatedEntities },
+    currentLevel: { ...level, entities },
   };
 }
 
@@ -348,12 +353,14 @@ export interface TransitionResult {
  * Handle player using a transition tile to move to another level.
  * Returns updated state and whether a new level was generated.
  */
-export function handleTransition(state: GameState): TransitionResult {
-  const player = getPlayer(state);
-  if (!player) return { state, isNewLevel: false };
+export function handleTransition(state: GameState, actorId: EntityId = state.playerId): TransitionResult {
+  const actor = getPlayerById(state, actorId);
+  if (!actor) return { state, isNewLevel: false };
+  const party = listPlayers(state);
+  if (party.length === 0) return { state, isNewLevel: false };
 
   // Check if player is standing on a transition tile
-  const tile = getTile(state.currentLevel, player.position.x, player.position.y);
+  const tile = getTile(state.currentLevel, actor.position.x, actor.position.y);
   if (tile !== 'Transition') {
     return {
       state: addMessage(state, 'There is no passage here.', 'system'),
@@ -365,8 +372,8 @@ export function handleTransition(state: GameState): TransitionResult {
   const forwardEdge = state.world.edges.find(
     (e) =>
       e.fromLevelId === state.world.currentLevelId &&
-      e.fromPosition.x === player.position.x &&
-      e.fromPosition.y === player.position.y
+      e.fromPosition.x === actor.position.x &&
+      e.fromPosition.y === actor.position.y
   );
 
   if (!forwardEdge) {
@@ -381,7 +388,7 @@ export function handleTransition(state: GameState): TransitionResult {
     ...state.world.levels,
     [state.world.currentLevelId]: {
       ...state.world.levels[state.world.currentLevelId],
-      level: removePlayerFromLevel(state.currentLevel, state.playerId),
+      level: removePlayersFromLevel(state.currentLevel),
       compressedAt: state.turn,
       tileFlavors: state.tileFlavors,
       enemyFlavors: state.enemyFlavors,
@@ -448,13 +455,6 @@ export function handleTransition(state: GameState): TransitionResult {
       forwardEdge.fromPosition
     );
 
-    // Place player at entry point and update FOV
-    const playerAtDest = { ...player, position: entryPos };
-    generatedLevel = {
-      ...generatedLevel,
-      entities: [...generatedLevel.entities.filter((e) => e.kind !== 'Player'), playerAtDest],
-    };
-    generatedLevel = updateFov(generatedLevel, entryPos, PLAYER_FOV_RADIUS);
     destLevel = generatedLevel;
 
     // Store new level
@@ -476,15 +476,12 @@ export function handleTransition(state: GameState): TransitionResult {
       forwardEdge.fromPosition
     );
 
-    const playerAtDest = { ...player, position: entryPos };
-    destLevel = {
-      ...destLevel,
-      entities: [...destLevel.entities.filter((e) => e.kind !== 'Player'), playerAtDest],
-    };
-
-    // Update FOV at new location
-    destLevel = updateFov(destLevel, entryPos, PLAYER_FOV_RADIUS);
   }
+
+  // Place party at entry point (spread to nearby walkable tiles) and update FOV.
+  destLevel = removePlayersFromLevel(destLevel);
+  const placed = placePartyAtEntry(destLevel, entryPos, party, actor.id);
+  destLevel = placed.level;
 
   const destStored = updatedLevels[forwardEdge.toLevelId];
   const destTileFlavors = destStored?.tileFlavors ?? {};
@@ -513,7 +510,7 @@ export function handleTransition(state: GameState): TransitionResult {
     roomDescription: destRoomDescription,
     messages: [
       ...state.messages,
-      { turn: state.turn, ts: Date.now(), text: 'You traverse to a new area...', kind: 'system' },
+      { turn: state.turn, ts: Date.now(), text: 'The party traverses to a new area...', kind: 'system' },
     ],
   };
 
@@ -571,13 +568,10 @@ function ensureTransitionTile(level: LevelState, pos: Position): LevelState {
   return { ...level, tiles };
 }
 
-/**
- * Remove player entity from a level (when leaving).
- */
-function removePlayerFromLevel(level: LevelState, playerId: string): LevelState {
+function removePlayersFromLevel(level: LevelState): LevelState {
   return {
     ...level,
-    entities: level.entities.filter((e) => e.id !== playerId),
+    entities: level.entities.filter((e) => e.kind !== 'Player'),
   };
 }
 
@@ -647,7 +641,7 @@ function resolveAttack(
     // Target dies: remove from entities
     updatedEntities.splice(targetIndex, 1);
     const deathMessage = target.kind === 'Player'
-      ? 'You have been defeated.'
+      ? `${getEntityName(target, state)} has been defeated.`
       : `${getEntityName(target, state)} dies.`;
     resultState = addMessage(resultState, deathMessage, 'combat');
 
@@ -662,9 +656,7 @@ function resolveAttack(
     }
   } else {
     updatedEntities[targetIndex] = damagedTarget;
-    const hitMessage = attacker.kind === 'Player'
-      ? `You hit ${getEntityName(target, state)} for ${damage} damage.`
-      : `${getEntityName(attacker, state)} hits you for ${damage} damage.`;
+    const hitMessage = `${getEntityName(attacker, state)} hits ${getEntityName(target, state)} for ${damage} damage.`;
     resultState = addMessage(resultState, hitMessage, 'combat');
   }
 
@@ -688,21 +680,27 @@ function getEntityName(entity: Player | Monster, state: GameState): string {
 
 // ---- Core loop: apply a player action ----
 
-export function applyAction(
-  state: GameState,
-  actorId: EntityId,
-  action: Action
-): GameState {
+export type ActorIntent = {
+  actorId: EntityId;
+  action: Action;
+};
+
+export type TickResult = {
+  state: GameState;
+  transition?: TransitionResult;
+};
+
+function applyActionWithoutAdvancingTurn(state: GameState, actorId: EntityId, action: Action): TickResult {
   switch (action.kind) {
     case 'Wait':
-      return advanceTurn(state);
+      return { state };
 
     case 'Move': {
       const delta = directionToDelta(action.direction);
       const level = state.currentLevel;
       const actorIndex = level.entities.findIndex((e) => e.id === actorId);
 
-      if (actorIndex === -1) return state;
+      if (actorIndex === -1) return { state };
 
       const actor = level.entities[actorIndex];
       const targetX = actor.position.x + delta.x;
@@ -711,8 +709,7 @@ export function applyAction(
       // Check bounds and tile walkability
       const targetTile = getTile(level, targetX, targetY);
       if (!isWalkable(targetTile)) {
-        // Can't move into wall, turn still advances
-        return advanceTurn(state);
+        return { state };
       }
 
       // Check for entity collision
@@ -720,10 +717,9 @@ export function applyAction(
       if (entityAtTarget) {
         // If it's an enemy and we're the player, auto-attack
         if (actor.kind === 'Player' && entityAtTarget.kind === 'Monster') {
-          return applyAction(state, actorId, { kind: 'Attack', direction: action.direction });
+          return applyActionWithoutAdvancingTurn(state, actorId, { kind: 'Attack', direction: action.direction });
         }
-        // Can't move into occupied tile
-        return advanceTurn(state);
+        return { state };
       }
 
       // Move the actor
@@ -738,24 +734,57 @@ export function applyAction(
         updatedLevel = updateFov(updatedLevel, { x: targetX, y: targetY }, PLAYER_FOV_RADIUS);
       }
 
-      return advanceTurn({ ...state, currentLevel: updatedLevel });
+      return { state: { ...state, currentLevel: updatedLevel } };
     }
 
     case 'Attack': {
-      const newState = resolveAttack(state, actorId, action.direction);
-      return advanceTurn(newState);
+      return { state: resolveAttack(state, actorId, action.direction) };
     }
 
     case 'Transition': {
-      // Transition is handled specially by the server to generate AI flavor
-      // This branch exists for type exhaustiveness; actual handling is in handleTransition
-      const result = handleTransition(state);
-      return advanceTurn(result.state);
+      const transition = handleTransition(state, actorId);
+      return { state: transition.state, transition };
     }
 
     case 'Command':
-      return state;
+      return { state };
   }
+}
+
+export function applyTick(state: GameState, intents: ActorIntent[]): TickResult {
+  const orderedIntents = [...intents].sort((a, b) => a.actorId.localeCompare(b.actorId));
+  let currentState = state;
+  let transition: TransitionResult | undefined = undefined;
+
+  for (const intent of orderedIntents) {
+    // Commands are out-of-band (server handles them), so skip here.
+    if (intent.action.kind === 'Command') continue;
+
+    const beforeLevelId = currentState.world.currentLevelId;
+    const result = applyActionWithoutAdvancingTurn(currentState, intent.actorId, intent.action);
+    currentState = result.state;
+    if (result.transition) transition = result.transition;
+
+    // Party transition moves everyone; drop any remaining intents for this tick.
+    if (intent.action.kind === 'Transition' && currentState.world.currentLevelId !== beforeLevelId) {
+      break;
+    }
+  }
+
+  currentState = applyMonsterActions(currentState);
+  currentState = applyRegen(currentState);
+  currentState = { ...currentState, turn: currentState.turn + 1 };
+
+  return { state: currentState, transition };
+}
+
+export function applyAction(
+  state: GameState,
+  actorId: EntityId,
+  action: Action
+): GameState {
+  if (action.kind === 'Command') return state;
+  return applyTick(state, [{ actorId, action }]).state;
 }
 
 // ---- Enemy AI (simple) ----
@@ -804,9 +833,9 @@ function moveTowardsPlayer(
 
 // ---- Turn advancement with enemy actions ----
 
-function advanceTurn(state: GameState): GameState {
-  const player = getPlayer(state);
-  if (!player) return { ...state, turn: state.turn + 1 };
+function applyMonsterActions(state: GameState): GameState {
+  const players = listPlayers(state);
+  if (players.length === 0) return state;
 
   let currentState = state;
 
@@ -823,19 +852,15 @@ function advanceTurn(state: GameState): GameState {
     // Monster may have died earlier this turn
     if (!entity || entity.kind !== 'Monster') continue;
 
-    // Update player reference in case they died
-    const currentPlayer = getPlayer(currentState);
-    if (!currentPlayer) continue;
+    const currentPlayers = listPlayers(currentState);
+    if (currentPlayers.length === 0) continue;
 
-    // Only act if monster is within detection range
-    const dx = entity.position.x - currentPlayer.position.x;
-    const dy = entity.position.y - currentPlayer.position.y;
-    const dist2 = dx * dx + dy * dy;
-
-    if (dist2 > MONSTER_DETECTION_RANGE_SQ) continue;
+    const closest = findClosestPlayer(entity.position, currentPlayers);
+    if (!closest) continue;
+    if (closest.dist2 > MONSTER_DETECTION_RANGE_SQ) continue;
 
     // Get monster's action using current game state
-    const action = moveTowardsPlayer(entity, currentPlayer.position, level);
+    const action = moveTowardsPlayer(entity, closest.player.position, level);
 
     // Apply the action using resolveAttack or direct movement
     if (action.kind === 'Move') {
@@ -861,17 +886,90 @@ function advanceTurn(state: GameState): GameState {
     }
   }
 
-  // Apply passive HP regen
-  currentState = applyRegen(currentState);
+  return currentState;
+}
 
-  return { ...currentState, turn: currentState.turn + 1 };
+function findClosestPlayer(from: Position, players: Player[]): { player: Player; dist2: number } | null {
+  let best: { player: Player; dist2: number } | null = null;
+  for (const player of players) {
+    const dx = from.x - player.position.x;
+    const dy = from.y - player.position.y;
+    const dist2 = dx * dx + dy * dy;
+    if (!best || dist2 < best.dist2) best = { player, dist2 };
+  }
+  return best;
 }
 
 // ---- Query functions ----
 
 export function isGameOver(state: GameState): boolean {
-  const player = getPlayer(state);
-  return !player || player.hp <= 0;
+  return listPlayers(state).length === 0;
+}
+
+function placePartyAtEntry(
+  level: LevelState,
+  entryPos: Position,
+  party: Player[],
+  actorId: EntityId
+): { level: LevelState } {
+  const reserved = new Set<string>();
+  const reservedKey = (p: Position) => `${p.x},${p.y}`;
+
+  const ordered = [
+    ...party.filter((p) => p.id === actorId),
+    ...party.filter((p) => p.id !== actorId),
+  ];
+
+  let currentLevel = level;
+  for (const player of ordered) {
+    const spawnPos = findNearestSpawn(currentLevel, entryPos, reserved);
+    const finalPos = spawnPos ?? entryPos;
+    reserved.add(reservedKey(finalPos));
+
+    const updatedPlayer: Player = { ...player, position: finalPos };
+    currentLevel = {
+      ...currentLevel,
+      entities: [...currentLevel.entities, updatedPlayer],
+    };
+    currentLevel = updateFov(currentLevel, finalPos, PLAYER_FOV_RADIUS);
+  }
+
+  return { level: currentLevel };
+}
+
+function findNearestSpawn(level: LevelState, start: Position, reserved: Set<string>): Position | null {
+  const key = (p: Position) => `${p.x},${p.y}`;
+  const startKey = key(start);
+  const queue: Position[] = [start];
+  const visited = new Set<string>([startKey]);
+
+  const deltas: Position[] = [
+    { x: 0, y: -1 },
+    { x: 0, y: 1 },
+    { x: -1, y: 0 },
+    { x: 1, y: 0 },
+  ];
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current) break;
+
+    if (!reserved.has(key(current))) {
+      const tile = getTile(level, current.x, current.y);
+      if (isWalkable(tile) && !getEntityAt(level, current.x, current.y)) return current;
+    }
+
+    for (const delta of deltas) {
+      const next = { x: current.x + delta.x, y: current.y + delta.y };
+      if (!inBounds(next.x, next.y, level.width, level.height)) continue;
+      const nextKey = key(next);
+      if (visited.has(nextKey)) continue;
+      visited.add(nextKey);
+      queue.push(next);
+    }
+  }
+
+  return null;
 }
 
 export function getVisibleEntities(state: GameState): Entity[] {
