@@ -18,6 +18,11 @@ export type EntityId = string;
 export type EnemyTemplateId = string;
 export type LevelId = string;
 
+export type PlayerLocation = {
+  levelId: LevelId;
+  position: Position;
+};
+
 // ---- World Coordinates ----
 
 // Grid coordinates for level positioning in the world
@@ -51,7 +56,9 @@ export interface WorldState {
   levels: Record<LevelId, StoredLevel>;  // All visited levels
   edges: LevelEdge[];                     // Connections between levels
   currentLevelId: LevelId;                // Active level
-  offlinePlayers?: Record<EntityId, Position>; // Last known positions for disconnected players
+  // Multi-level groundwork: per-player location support (not fully wired yet).
+  playerLocations?: Record<EntityId, PlayerLocation>;
+  offlinePlayers?: Record<EntityId, PlayerLocation>;
 }
 
 // ---- Entities ----

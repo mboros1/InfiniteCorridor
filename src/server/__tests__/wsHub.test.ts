@@ -87,6 +87,28 @@ function makeState(level: LevelState): GameState {
   };
 }
 
+function makeStateWithSecondLevel(params: { levelA: LevelState; levelB: LevelState; edge: GameState['world']['edges'][number] }): GameState {
+  return {
+    worldConfig: { themePrompt: 'test', seed: 'seed', difficulty: 'Normal', rulesVersion: '0.1.0' },
+    seed: 123,
+    world: {
+      levels: {
+        [params.levelA.id]: { level: params.levelA, coord: { x: 0, y: 0 }, compressedAt: 0 },
+        [params.levelB.id]: { level: params.levelB, coord: { x: 1, y: 0 }, compressedAt: 0 },
+      },
+      edges: [params.edge],
+      currentLevelId: params.levelA.id,
+    },
+    currentLevel: params.levelA,
+    playerId: 'player-1',
+    turn: 0,
+    messages: [],
+    enemyFlavors: {},
+    tileFlavors: {},
+    roomDescription: 'Room',
+  };
+}
+
 describe('wsHub', () => {
   test('invalid JSON -> response ok:false BAD_REQUEST', async () => {
     const games = new Map<string, GameState>();
@@ -959,5 +981,379 @@ describe('wsHub', () => {
 
     expect(playerAfterA.position.x).toBe(playerBeforeA.position.x + 1);
     expect(playerAfterB.position.x).toBe(playerBeforeB.position.x - 1);
+  });
+
+  test('transition moves only the acting player; other player stays on source level', async () => {
+    const levelA = { ...makeLevelWithSize(3, 3), id: 'lvl-a' };
+    const tilesA = [...levelA.tiles];
+    tilesA[1 * levelA.width + 1] = 'Transition';
+    const levelAWithPortal: LevelState = { ...levelA, tiles: tilesA };
+
+    const levelB = { ...makeLevelWithSize(3, 3), id: 'lvl-b' };
+    const state = makeStateWithSecondLevel({
+      levelA: levelAWithPortal,
+      levelB,
+      edge: {
+        id: 'edge-a-b',
+        fromLevelId: levelAWithPortal.id,
+        fromPosition: { x: 1, y: 1 },
+        toLevelId: levelB.id,
+        toPosition: { x: 1, y: 1 },
+      },
+    });
+
+    const games = new Map<string, GameState>([['game-1', state]]);
+
+    const hub = createWsHub({
+      newRequestId: createIdGenerator('req'),
+      newGameId: createIdGenerator('game'),
+      tickMs: 200,
+      startTickTimers: false,
+      getGame: (id) => games.get(id),
+      setGame: (id, next) => games.set(id, next),
+      loadGameState: (id) => TE.right(O.fromNullable(games.get(id))),
+      persistGameState: (_id, _state) => TE.right(undefined),
+      generateRoomFlavor: async (s) => s,
+      listPlayers: (_limit) => TE.right([]),
+      getPlayerProfile: (_playerId) => TE.right(O.none),
+      getOrCreatePlayerProfile: ({ playerId, playerName }) =>
+        TE.right({
+          playerId,
+          name: playerName ?? `Wanderer-${playerId.slice(0, 6)}`,
+          description: 'A traveler of the infinite corridor.',
+          tokenChar: '@',
+        }),
+      createPlayerProfile: ({ playerId, prompt }) =>
+        TE.right({
+          playerId: playerId ?? '00000000-0000-0000-0000-000000000000',
+          name: 'Player',
+          description: prompt,
+          tokenChar: '@',
+        }),
+      listWorlds: (_params) => TE.right([]),
+      touchWorldPlayer: (_params) => TE.right(undefined),
+      publicErrorBody,
+    });
+
+    const wsA = makeFakeWs();
+    const wsB = makeFakeWs();
+    const playerAId = '00000000-0000-0000-0000-000000000001';
+    const playerBId = '00000000-0000-0000-0000-000000000002';
+
+    await hub.message(
+      wsA,
+      JSON.stringify({
+        type: 'join',
+        requestId: 'join-a',
+        gameId: 'game-1',
+        playerId: playerAId,
+        playerName: 'Alice',
+      })
+    );
+    drain(wsA);
+
+    await hub.message(
+      wsB,
+      JSON.stringify({
+        type: 'join',
+        requestId: 'join-b',
+        gameId: 'game-1',
+        playerId: playerBId,
+        playerName: 'Bob',
+      })
+    );
+    drain(wsB);
+    drain(wsA);
+
+    // Record Bob's initial position on levelA
+    const gameBeforeTransition = games.get('game-1');
+    const bobBefore = gameBeforeTransition?.currentLevel?.entities?.find((e: any) => e.kind === 'Player' && e.id === wsB.data.playerEntityId);
+    const bobPosBefore = bobBefore?.position;
+    if (!bobPosBefore) throw new Error('expected Bob position before transition');
+
+    await hub.message(
+      wsA,
+      JSON.stringify({
+        type: 'action',
+        requestId: 't1',
+        gameId: 'game-1',
+        playerId: playerAId,
+        action: { kind: 'Transition' },
+      })
+    );
+    drain(wsA);
+
+    await hub.tickGame('game-1');
+
+    const afterTickA = drain(wsA).find((m) => m.type === 'state');
+    const afterTickB = drain(wsB).find((m) => m.type === 'state');
+    if (!afterTickA || afterTickA.type !== 'state') throw new Error('expected state broadcast to A');
+    if (!afterTickB || afterTickB.type !== 'state') throw new Error('expected state broadcast to B');
+
+    const stateAfter = afterTickA.state as GameState;
+
+    // currentLevelId should now be levelB (follows the transitioning player)
+    expect(stateAfter.world.currentLevelId).toBe(levelB.id);
+    expect(stateAfter.currentLevel.id).toBe(levelB.id);
+
+    // Only Alice should be on the destination level (currentLevel)
+    const destPlayers = stateAfter.currentLevel.entities.filter((e: any) => e.kind === 'Player');
+    expect(destPlayers).toHaveLength(1);
+    expect(destPlayers[0].id).toBe(wsA.data.playerEntityId);
+
+    // Bob should remain on the source level (stored in world.levels)
+    const sourceLevelStored = stateAfter.world.levels[levelAWithPortal.id]?.level;
+    const sourcePlayers = sourceLevelStored?.entities?.filter((e: any) => e.kind === 'Player') ?? [];
+    expect(sourcePlayers).toHaveLength(1);
+    expect(sourcePlayers[0].id).toBe(wsB.data.playerEntityId);
+
+    // playerLocations should track each player's level
+    const actorA = wsA.data.playerEntityId!;
+    const actorB = wsB.data.playerEntityId!;
+    expect(stateAfter.world.playerLocations?.[actorA]?.levelId).toBe(levelB.id);
+    // Note: Bob's playerLocations was set when he joined, should still be levelA
+  });
+
+  test('multi-level: players on different levels can move independently in the same tick', async () => {
+    const levelA = { ...makeLevelWithSize(5, 5), id: 'lvl-a' };
+    const tilesA = [...levelA.tiles];
+    // Place transition at center (2,2) where first player spawns on a 5x5 level
+    tilesA[2 * levelA.width + 2] = 'Transition';
+    const levelAWithPortal: LevelState = { ...levelA, tiles: tilesA };
+
+    const levelB = { ...makeLevelWithSize(5, 5), id: 'lvl-b' };
+    const state = makeStateWithSecondLevel({
+      levelA: levelAWithPortal,
+      levelB,
+      edge: {
+        id: 'edge-a-b',
+        fromLevelId: levelAWithPortal.id,
+        fromPosition: { x: 2, y: 2 },
+        toLevelId: levelB.id,
+        toPosition: { x: 2, y: 2 },
+      },
+    });
+
+    const games = new Map<string, GameState>([['game-1', state]]);
+
+    const hub = createWsHub({
+      newRequestId: createIdGenerator('req'),
+      newGameId: createIdGenerator('game'),
+      tickMs: 200,
+      startTickTimers: false,
+      getGame: (id) => games.get(id),
+      setGame: (id, next) => games.set(id, next),
+      loadGameState: (id) => TE.right(O.fromNullable(games.get(id))),
+      persistGameState: (_id, _state) => TE.right(undefined),
+      generateRoomFlavor: async (s) => s,
+      listPlayers: (_limit) => TE.right([]),
+      getPlayerProfile: (_playerId) => TE.right(O.none),
+      getOrCreatePlayerProfile: ({ playerId, playerName }) =>
+        TE.right({
+          playerId,
+          name: playerName ?? `Wanderer-${playerId.slice(0, 6)}`,
+          description: 'A traveler of the infinite corridor.',
+          tokenChar: '@',
+        }),
+      createPlayerProfile: ({ playerId, prompt }) =>
+        TE.right({
+          playerId: playerId ?? '00000000-0000-0000-0000-000000000000',
+          name: 'Player',
+          description: prompt,
+          tokenChar: '@',
+        }),
+      listWorlds: (_params) => TE.right([]),
+      touchWorldPlayer: (_params) => TE.right(undefined),
+      publicErrorBody,
+    });
+
+    const wsA = makeFakeWs();
+    const wsB = makeFakeWs();
+    const playerAId = '00000000-0000-0000-0000-000000000001';
+    const playerBId = '00000000-0000-0000-0000-000000000002';
+
+    // Both players join on levelA
+    await hub.message(wsA, JSON.stringify({ type: 'join', requestId: 'join-a', gameId: 'game-1', playerId: playerAId, playerName: 'Alice' }));
+    drain(wsA);
+    await hub.message(wsB, JSON.stringify({ type: 'join', requestId: 'join-b', gameId: 'game-1', playerId: playerBId, playerName: 'Bob' }));
+    drain(wsB);
+    drain(wsA);
+
+    // Alice transitions to levelB
+    await hub.message(wsA, JSON.stringify({ type: 'action', requestId: 't1', gameId: 'game-1', playerId: playerAId, action: { kind: 'Transition' } }));
+    drain(wsA);
+    await hub.tickGame('game-1');
+    drain(wsA);
+    drain(wsB);
+
+    // Now Alice is on levelB, Bob is on levelA
+    // Get their current positions
+    const stateAfterTransition = games.get('game-1');
+    if (!stateAfterTransition) throw new Error('expected game state');
+    const actorA = wsA.data.playerEntityId!;
+    const actorB = wsB.data.playerEntityId!;
+
+    const levelBState = stateAfterTransition.world.levels['lvl-b']?.level;
+    const levelAState = stateAfterTransition.world.levels['lvl-a']?.level;
+    if (!levelBState || !levelAState) throw new Error('expected both levels');
+
+    const aliceBefore = levelBState.entities.find((e: any) => e.id === actorA) as Player | undefined;
+    const bobBefore = levelAState.entities.find((e: any) => e.id === actorB) as Player | undefined;
+    if (!aliceBefore || !bobBefore) throw new Error('expected both players in their levels');
+
+    // Queue moves for both players (on different levels)
+    await hub.message(wsA, JSON.stringify({ type: 'action', requestId: 'm-a', gameId: 'game-1', playerId: playerAId, action: { kind: 'Move', direction: 'Right' } }));
+    await hub.message(wsB, JSON.stringify({ type: 'action', requestId: 'm-b', gameId: 'game-1', playerId: playerBId, action: { kind: 'Move', direction: 'Down' } }));
+    drain(wsA);
+    drain(wsB);
+
+    // Tick - both players should move on their respective levels
+    await hub.tickGame('game-1');
+
+    const stateForA = drain(wsA).find((m) => m.type === 'state');
+    const stateForB = drain(wsB).find((m) => m.type === 'state');
+    if (!stateForA || stateForA.type !== 'state') throw new Error('expected state broadcast to A');
+    if (!stateForB || stateForB.type !== 'state') throw new Error('expected state broadcast to B');
+
+    const viewA = stateForA.state as GameState;
+    const viewB = stateForB.state as GameState;
+
+    // Alice should have moved Right on levelB
+    const aliceAfter = viewA.currentLevel.entities.find((e: any) => e.id === actorA) as Player | undefined;
+    if (!aliceAfter) throw new Error('expected Alice in her view');
+    expect(aliceAfter.position.x).toBe(aliceBefore.position.x + 1);
+    expect(aliceAfter.position.y).toBe(aliceBefore.position.y);
+
+    // Bob should have moved Down on levelA
+    const bobAfter = viewB.currentLevel.entities.find((e: any) => e.id === actorB) as Player | undefined;
+    if (!bobAfter) throw new Error('expected Bob in his view');
+    expect(bobAfter.position.x).toBe(bobBefore.position.x);
+    expect(bobAfter.position.y).toBe(bobBefore.position.y + 1);
+  });
+
+  test('multi-level: wsHub broadcasts per-player level view when players are on different levels', async () => {
+    const levelA = { ...makeLevelWithSize(3, 3), id: 'lvl-a' };
+    const tilesA = [...levelA.tiles];
+    tilesA[1 * levelA.width + 1] = 'Transition';
+    const levelAWithPortal: LevelState = { ...levelA, tiles: tilesA };
+
+    const levelB = { ...makeLevelWithSize(3, 3), id: 'lvl-b' };
+    const state = makeStateWithSecondLevel({
+      levelA: levelAWithPortal,
+      levelB,
+      edge: {
+        id: 'edge-a-b',
+        fromLevelId: levelAWithPortal.id,
+        fromPosition: { x: 1, y: 1 },
+        toLevelId: levelB.id,
+        toPosition: { x: 1, y: 1 },
+      },
+    });
+
+    const games = new Map<string, GameState>([['game-1', state]]);
+
+    const hub = createWsHub({
+      newRequestId: createIdGenerator('req'),
+      newGameId: createIdGenerator('game'),
+      tickMs: 200,
+      startTickTimers: false,
+      getGame: (id) => games.get(id),
+      setGame: (id, next) => games.set(id, next),
+      loadGameState: (id) => TE.right(O.fromNullable(games.get(id))),
+      persistGameState: (_id, _state) => TE.right(undefined),
+      generateRoomFlavor: async (s) => s,
+      listPlayers: (_limit) => TE.right([]),
+      getPlayerProfile: (_playerId) => TE.right(O.none),
+      getOrCreatePlayerProfile: ({ playerId, playerName }) =>
+        TE.right({
+          playerId,
+          name: playerName ?? `Wanderer-${playerId.slice(0, 6)}`,
+          description: 'A traveler of the infinite corridor.',
+          tokenChar: '@',
+        }),
+      createPlayerProfile: ({ playerId, prompt }) =>
+        TE.right({
+          playerId: playerId ?? '00000000-0000-0000-0000-000000000000',
+          name: 'Player',
+          description: prompt,
+          tokenChar: '@',
+        }),
+      listWorlds: (_params) => TE.right([]),
+      touchWorldPlayer: (_params) => TE.right(undefined),
+      publicErrorBody,
+    });
+
+    const wsA = makeFakeWs();
+    const wsB = makeFakeWs();
+    const playerAId = '00000000-0000-0000-0000-000000000001';
+    const playerBId = '00000000-0000-0000-0000-000000000002';
+
+    // Both players join
+    await hub.message(
+      wsA,
+      JSON.stringify({
+        type: 'join',
+        requestId: 'join-a',
+        gameId: 'game-1',
+        playerId: playerAId,
+        playerName: 'Alice',
+      })
+    );
+    drain(wsA);
+
+    await hub.message(
+      wsB,
+      JSON.stringify({
+        type: 'join',
+        requestId: 'join-b',
+        gameId: 'game-1',
+        playerId: playerBId,
+        playerName: 'Bob',
+      })
+    );
+    drain(wsB);
+    drain(wsA);
+
+    // Alice transitions to levelB
+    await hub.message(
+      wsA,
+      JSON.stringify({
+        type: 'action',
+        requestId: 't1',
+        gameId: 'game-1',
+        playerId: playerAId,
+        action: { kind: 'Transition' },
+      })
+    );
+    drain(wsA);
+
+    await hub.tickGame('game-1');
+
+    // Get the state broadcasts for each player
+    const stateForA = drain(wsA).find((m) => m.type === 'state');
+    const stateForB = drain(wsB).find((m) => m.type === 'state');
+    if (!stateForA || stateForA.type !== 'state') throw new Error('expected state broadcast to A');
+    if (!stateForB || stateForB.type !== 'state') throw new Error('expected state broadcast to B');
+
+    const viewA = stateForA.state as GameState;
+    const viewB = stateForB.state as GameState;
+
+    // Alice should see levelB as her currentLevel
+    expect(viewA.currentLevel.id).toBe('lvl-b');
+    expect(viewA.world.currentLevelId).toBe('lvl-b');
+    const aliceOnViewA = viewA.currentLevel.entities.find((e: any) => e.id === wsA.data.playerEntityId);
+    expect(aliceOnViewA).toBeDefined();
+
+    // Bob should see levelA as his currentLevel
+    expect(viewB.currentLevel.id).toBe('lvl-a');
+    expect(viewB.world.currentLevelId).toBe('lvl-a');
+    const bobOnViewB = viewB.currentLevel.entities.find((e: any) => e.id === wsB.data.playerEntityId);
+    expect(bobOnViewB).toBeDefined();
+
+    // Each player should only see themselves on their respective level
+    const playersOnViewA = viewA.currentLevel.entities.filter((e: any) => e.kind === 'Player');
+    const playersOnViewB = viewB.currentLevel.entities.filter((e: any) => e.kind === 'Player');
+    expect(playersOnViewA).toHaveLength(1);
+    expect(playersOnViewB).toHaveLength(1);
   });
 });

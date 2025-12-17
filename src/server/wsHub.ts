@@ -1,5 +1,5 @@
 import { createInitialGameState, applyTick, getPlayerById } from '../engine/game.js';
-import type { Action, EntityId, GameState, WorldConfig } from '../domain/model.js';
+import type { Action, EntityId, GameState, LevelState, Player, WorldConfig } from '../domain/model.js';
 import { APP_ERROR_CODE, appError, toAppError, type AppError } from '../errors/appError.js';
 import { E, O, TE } from '../utils/fp.js';
 import { applyCommandForActor } from './commands.js';
@@ -262,11 +262,52 @@ export function createWsHub(deps: WsHubDeps): WsHub {
     }
   }
 
+  function getPlayerLevelId(state: GameState, playerEntityId: EntityId): string {
+    return state.world.playerLocations?.[playerEntityId]?.levelId ?? state.world.currentLevelId;
+  }
+
+  function getPlayerLevel(state: GameState, levelId: string): LevelState {
+    // If the player is on the current active level, use the up-to-date currentLevel
+    // (world.levels[levelId].level might be stale after tick updates)
+    if (levelId === state.world.currentLevelId) {
+      return state.currentLevel;
+    }
+    return state.world.levels[levelId]?.level ?? state.currentLevel;
+  }
+
+  function findPlayerOnLevel(level: LevelState, playerEntityId: EntityId): Player | undefined {
+    const entity = level.entities.find((e) => e.id === playerEntityId);
+    return entity?.kind === 'Player' ? entity : undefined;
+  }
+
   function gameStatusFor(ws: WsLike<WsData>, state: GameState): 'active' | 'gameOver' {
     const playerEntityId = ws.data.playerEntityId;
     if (!playerEntityId) return 'active';
-    const player = getPlayerById(state, playerEntityId);
+    // Find the player on their specific level (not just currentLevel)
+    const levelId = getPlayerLevelId(state, playerEntityId);
+    const level = getPlayerLevel(state, levelId);
+    const player = findPlayerOnLevel(level, playerEntityId);
     return player && player.hp > 0 ? 'active' : 'gameOver';
+  }
+
+  function buildPlayerView(state: GameState, playerEntityId: EntityId): GameState {
+    const levelId = getPlayerLevelId(state, playerEntityId);
+    const level = getPlayerLevel(state, levelId);
+    const storedLevel = state.world.levels[levelId];
+
+    // Build a per-player view with their level as currentLevel
+    return {
+      ...state,
+      world: {
+        ...state.world,
+        currentLevelId: levelId,
+      },
+      currentLevel: level,
+      // Use per-level flavors if available
+      tileFlavors: storedLevel?.tileFlavors ?? state.tileFlavors,
+      enemyFlavors: storedLevel?.enemyFlavors ?? state.enemyFlavors,
+      roomDescription: storedLevel?.roomDescription ?? state.roomDescription,
+    };
   }
 
   function broadcastState(gameId: string, state: GameState): void {
@@ -274,10 +315,13 @@ export function createWsHub(deps: WsHubDeps): WsHub {
     if (!sockets || sockets.size === 0) return;
 
     for (const ws of sockets) {
+      const playerEntityId = ws.data.playerEntityId;
+      // Build per-player view if player entity ID is known
+      const viewState = playerEntityId ? buildPlayerView(state, playerEntityId) : state;
       safeSend(ws, {
         type: 'state',
         gameId,
-        state,
+        state: viewState,
         gameStatus: gameStatusFor(ws, state),
       });
     }

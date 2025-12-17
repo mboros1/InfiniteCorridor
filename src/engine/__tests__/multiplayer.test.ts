@@ -42,7 +42,7 @@ function makeState(level: LevelState, levels: Record<string, { level: LevelState
 }
 
 describe('multiplayer engine behavior', () => {
-  test('handleTransition moves party and removes players from stored origin', () => {
+  test('handleTransition moves only the acting player; others remain on source level', () => {
     const fromLevelId = 'lvl-a';
     const toLevelId = 'lvl-b';
 
@@ -101,16 +101,22 @@ describe('multiplayer engine behavior', () => {
     expect(result.isNewLevel).toBe(false);
     expect(result.state.world.currentLevelId).toBe(toLevelId);
 
-    const party = result.state.currentLevel.entities.filter((e): e is Player => e.kind === 'Player');
-    expect(party).toHaveLength(2);
-    expect(party.some((p) => p.id === alice.id)).toBe(true);
-    expect(party.some((p) => p.id === bob.id)).toBe(true);
+    // Only Alice should be on the destination level
+    const destPlayers = result.state.currentLevel.entities.filter((e): e is Player => e.kind === 'Player');
+    expect(destPlayers).toHaveLength(1);
+    expect(destPlayers[0].id).toBe(alice.id);
 
+    // Bob should remain on the source level (stored in world.levels)
     const storedOrigin = result.state.world.levels[fromLevelId]?.level;
     const originPlayers = storedOrigin?.entities.filter((e) => e.kind === 'Player') ?? [];
-    expect(originPlayers).toHaveLength(0);
+    expect(originPlayers).toHaveLength(1);
+    expect(originPlayers[0].id).toBe(bob.id);
 
-    expect(result.state.messages.some((m) => m.text.includes('party traverses'))).toBe(true);
+    // Message should reference the individual player, not "party"
+    expect(result.state.messages.some((m) => m.text.includes('Alice traverses'))).toBe(true);
+
+    // playerLocations should be updated for Alice
+    expect(result.state.world.playerLocations?.[alice.id]?.levelId).toBe(toLevelId);
   });
 
   test('monsters target the closest player on their turn', () => {
