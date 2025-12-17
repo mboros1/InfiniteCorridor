@@ -13,7 +13,8 @@ import type {
   LevelEdge,
   LevelCoord,
   StoredLevel,
-  WorldConfig
+  WorldConfig,
+  PlayerLocation
 } from '../domain/model.js';
 import { TILE_DATA } from '../domain/tiles.js';
 
@@ -98,7 +99,12 @@ const positionSchema: z.ZodType<Position> = z.object({
   y: z.number().int(),
 });
 
-const offlinePlayersSchema: z.ZodType<Record<string, Position>> = z.record(z.string(), positionSchema);
+const playerLocationSchema: z.ZodType<PlayerLocation> = z.object({
+  levelId: z.string(),
+  position: positionSchema,
+});
+
+const playerLocationsSchema: z.ZodType<Record<string, PlayerLocation>> = z.record(z.string(), playerLocationSchema);
 
 const monsterSpawnSchema = z.object({
   id: z.string(),
@@ -197,7 +203,8 @@ const worldStateSchema: z.ZodType<WorldState, z.ZodTypeDef, unknown> = z.object(
   levels: z.record(storedLevelSchema),
   edges: z.array(levelEdgeSchema),
   currentLevelId: z.string(),
-  offlinePlayers: offlinePlayersSchema.optional(),
+  playerLocations: playerLocationsSchema.optional(),
+  offlinePlayers: playerLocationsSchema.optional(),
 });
 
 // Game state schema with proper typing

@@ -236,7 +236,7 @@ function persistGameState(gameId: string, state: GameState): TE.TaskEither<AppEr
 }
 
 function detachPlayersForStartup(state: GameState): GameState {
-  const offline: Record<string, Position> = { ...(state.world.offlinePlayers ?? {}) };
+  const offline: Record<string, { levelId: string; position: Position }> = { ...(state.world.offlinePlayers ?? {}) };
   const updatedLevels: Record<string, StoredLevel> = {};
   let currentLevel = state.currentLevel;
   let hasRemoved = false;
@@ -251,7 +251,7 @@ function detachPlayersForStartup(state: GameState): GameState {
     updatedLevels[levelId] = { ...stored, level: cleanedLevel };
 
     for (const player of players) {
-      offline[player.id] = player.position;
+      offline[player.id] = { levelId, position: player.position };
     }
 
     if (levelId === state.world.currentLevelId) {
@@ -274,12 +274,42 @@ function detachPlayersForStartup(state: GameState): GameState {
   };
 }
 
+function ensureOfflinePlayerLocations(state: GameState): GameState {
+  const offline = state.world.offlinePlayers;
+  if (!offline) return state;
+
+  let needsRewrite = false;
+  const upgraded: Record<string, { levelId: string; position: Position }> = {};
+
+  for (const [entityId, value] of Object.entries(offline as Record<string, unknown>)) {
+    if (typeof value === 'object' && value && 'levelId' in value && 'position' in value) {
+      upgraded[entityId] = value as { levelId: string; position: Position };
+      continue;
+    }
+    if (typeof value === 'object' && value && 'x' in value && 'y' in value) {
+      needsRewrite = true;
+      upgraded[entityId] = { levelId: state.world.currentLevelId, position: value as Position };
+      continue;
+    }
+    needsRewrite = true;
+  }
+
+  if (!needsRewrite) return state;
+  return {
+    ...state,
+    world: {
+      ...state.world,
+      offlinePlayers: Object.keys(upgraded).length > 0 ? upgraded : undefined,
+    },
+  };
+}
+
 function loadGameState(gameId: string): TE.TaskEither<AppError, O.Option<GameState>> {
   return pipe(
     getWorldState(gameId),
     TE.map((state) => {
       if (O.isSome(state)) {
-        const restored = ensureMonsterSpawns(state.value);
+        const restored = ensureOfflinePlayerLocations(ensureMonsterSpawns(state.value));
         const finalState = games.has(gameId) ? restored : detachPlayersForStartup(restored);
         games.set(gameId, finalState);
         logLevelConfiguration(finalState, 'loadGameState');

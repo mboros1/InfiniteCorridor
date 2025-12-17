@@ -1,4 +1,4 @@
-import type { EntityId, GameState, LevelState, Player, Position, WorldState } from '../domain/model.js';
+import type { EntityId, GameState, LevelState, Player, PlayerLocation, Position, WorldState } from '../domain/model.js';
 import { isWalkable } from '../domain/tiles.js';
 import { playerEntityId } from '../domain/ids.js';
 import { addMessage, getEntityAt, getTile, updateFov } from '../engine/game.js';
@@ -146,7 +146,7 @@ function syncCurrentLevelToWorld(state: GameState, currentLevel: LevelState): Ga
   };
 }
 
-function withOfflinePlayers(world: WorldState, map?: Record<EntityId, Position>): WorldState {
+function withOfflinePlayers(world: WorldState, map?: Record<EntityId, PlayerLocation>): WorldState {
   if (!map || Object.keys(map).length === 0) {
     if (!world.offlinePlayers) return world;
     return { ...world, offlinePlayers: undefined };
@@ -154,7 +154,35 @@ function withOfflinePlayers(world: WorldState, map?: Record<EntityId, Position>)
   return { ...world, offlinePlayers: map };
 }
 
-function offlinePlayerPosition(state: GameState, entityId: EntityId): Position | undefined {
+function withPlayerLocations(world: WorldState, map?: Record<EntityId, PlayerLocation>): WorldState {
+  if (!map || Object.keys(map).length === 0) {
+    if (!world.playerLocations) return world;
+    return { ...world, playerLocations: undefined };
+  }
+  return { ...world, playerLocations: map };
+}
+
+export function setPlayerLocation(state: GameState, entityId: EntityId, location: PlayerLocation): GameState {
+  const playerLocations = state.world.playerLocations ?? {};
+  const nextLocations: Record<EntityId, PlayerLocation> = { ...playerLocations, [entityId]: location };
+  return {
+    ...state,
+    world: withPlayerLocations(state.world, nextLocations),
+  };
+}
+
+export function clearPlayerLocation(state: GameState, entityId: EntityId): GameState {
+  const playerLocations = state.world.playerLocations;
+  if (!playerLocations || !(entityId in playerLocations)) return state;
+  const { [entityId]: _, ...rest } = playerLocations;
+  const cleaned: Record<EntityId, PlayerLocation> | undefined = Object.keys(rest).length > 0 ? rest : undefined;
+  return {
+    ...state,
+    world: withPlayerLocations(state.world, cleaned),
+  };
+}
+
+function offlinePlayerLocation(state: GameState, entityId: EntityId): PlayerLocation | undefined {
   return state.world.offlinePlayers?.[entityId];
 }
 
@@ -162,7 +190,7 @@ function clearOfflineEntry(state: GameState, entityId: EntityId): GameState {
   const offline = state.world.offlinePlayers;
   if (!offline || !(entityId in offline)) return state;
   const { [entityId]: _, ...rest } = offline;
-  const cleaned = Object.keys(rest).length > 0 ? rest : undefined;
+  const cleaned: Record<EntityId, PlayerLocation> | undefined = Object.keys(rest).length > 0 ? rest : undefined;
   return {
     ...state,
     world: withOfflinePlayers(state.world, cleaned),
@@ -179,11 +207,17 @@ export function ensurePlayerInGame(state: GameState, options: EnsurePlayerOption
 
   if (existing) {
     const updated = applyProfileIfProvided(existing, options);
-    if (updated === existing) return { state, playerEntityId: desiredEntityId };
+    let resultState = clearOfflineEntry(state, desiredEntityId);
+    // Update playerLocations with current position
+    resultState = setPlayerLocation(resultState, desiredEntityId, {
+      levelId: resultState.world.currentLevelId,
+      position: existing.position,
+    });
+    if (updated === existing) return { state: resultState, playerEntityId: desiredEntityId };
 
     const updatedLevel = upsertPlayerEntity(currentLevel, updated);
     return {
-      state: clearOfflineEntry(syncCurrentLevelToWorld(state, updatedLevel), desiredEntityId),
+      state: syncCurrentLevelToWorld(resultState, updatedLevel),
       playerEntityId: desiredEntityId,
     };
   }
@@ -198,11 +232,22 @@ export function ensurePlayerInGame(state: GameState, options: EnsurePlayerOption
 
   if (isLegacyBootstrap) {
     const remappedLevel = replaceEntityIdAndProfile(currentLevel, state.playerId, desiredEntityId, options);
-    const remappedState = syncCurrentLevelToWorld({ ...state, playerId: desiredEntityId }, remappedLevel);
+    let remappedState = syncCurrentLevelToWorld({ ...state, playerId: desiredEntityId }, remappedLevel);
+    remappedState = clearOfflineEntry(remappedState, desiredEntityId);
+    // Update playerLocations for legacy bootstrap
+    const legacyPlayer = remappedLevel.entities.find((e) => e.id === desiredEntityId);
+    if (legacyPlayer) {
+      remappedState = setPlayerLocation(remappedState, desiredEntityId, {
+        levelId: remappedState.world.currentLevelId,
+        position: legacyPlayer.position,
+      });
+    }
     return { state: remappedState, playerEntityId: desiredEntityId };
   }
 
-  const preferredNear = offlinePlayerPosition(state, desiredEntityId) ?? players[0]?.position;
+  const offline = offlinePlayerLocation(state, desiredEntityId);
+  const preferredNear =
+    offline && offline.levelId === state.world.currentLevelId ? offline.position : players[0]?.position;
   const spawnPos = findSpawnPosition(currentLevel, preferredNear);
   if (!spawnPos) {
     return {
@@ -217,9 +262,15 @@ export function ensurePlayerInGame(state: GameState, options: EnsurePlayerOption
   const withPlayer = upsertPlayerEntity(currentLevel, newPlayer);
   const withFov = updateFov(withPlayer, spawnPos, CONFIG.gameplay.playerFovRadius);
   let next = syncCurrentLevelToWorld(state, withFov);
+  next = clearOfflineEntry(next, desiredEntityId);
+  // Set playerLocations for newly joined player
+  next = setPlayerLocation(next, desiredEntityId, {
+    levelId: next.world.currentLevelId,
+    position: spawnPos,
+  });
   next = addMessage(next, `${newPlayer.name} joins the corridor.`, 'system');
 
-  return { state: clearOfflineEntry(next, desiredEntityId), playerEntityId: desiredEntityId };
+  return { state: next, playerEntityId: desiredEntityId };
 }
 
 export function removePlayerFromGame(state: GameState, playerEntityId: EntityId): GameState {
@@ -228,9 +279,13 @@ export function removePlayerFromGame(state: GameState, playerEntityId: EntityId)
   if (!player) return state;
 
   const updatedLevel = { ...currentLevel, entities: currentLevel.entities.filter((e) => e.id !== playerEntityId) };
-  const synced = syncCurrentLevelToWorld({ ...state, currentLevel: updatedLevel }, updatedLevel);
+  let synced = syncCurrentLevelToWorld({ ...state, currentLevel: updatedLevel }, updatedLevel);
+
+  // Move location from playerLocations to offlinePlayers
+  synced = clearPlayerLocation(synced, playerEntityId);
   const offlinePlayers = synced.world.offlinePlayers ?? {};
-  const nextOffline = { ...offlinePlayers, [playerEntityId]: player.position };
+  const location: PlayerLocation = { levelId: synced.world.currentLevelId, position: player.position };
+  const nextOffline: Record<EntityId, PlayerLocation> = { ...offlinePlayers, [playerEntityId]: location };
   return {
     ...synced,
     world: withOfflinePlayers(synced.world, nextOffline),

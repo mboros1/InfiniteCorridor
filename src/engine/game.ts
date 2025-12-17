@@ -11,6 +11,7 @@ import type {
   LevelState,
   Monster,
   Player,
+  PlayerLocation,
   Position,
   TileKind,
   WorldConfig,
@@ -91,6 +92,16 @@ export function getPlayerById(state: GameState, playerId: EntityId): Player | un
 
 export function listPlayers(state: GameState): Player[] {
   return state.currentLevel.entities.filter((e): e is Player => e.kind === 'Player');
+}
+
+// Update a player's location in world.playerLocations
+export function updatePlayerLocation(state: GameState, entityId: EntityId, location: PlayerLocation): GameState {
+  const playerLocations = state.world.playerLocations ?? {};
+  const nextLocations: Record<EntityId, PlayerLocation> = { ...playerLocations, [entityId]: location };
+  return {
+    ...state,
+    world: { ...state.world, playerLocations: nextLocations },
+  };
 }
 
 export function getPlayer(state: GameState): Player | undefined {
@@ -357,13 +368,12 @@ export interface TransitionResult {
 
 /**
  * Handle player using a transition tile to move to another level.
+ * Only the acting player transitions; other players remain on the source level.
  * Returns updated state and whether a new level was generated.
  */
 export function handleTransition(state: GameState, actorId: EntityId = state.playerId): TransitionResult {
   const actor = getPlayerById(state, actorId);
   if (!actor) return { state, isNewLevel: false };
-  const party = listPlayers(state);
-  if (party.length === 0) return { state, isNewLevel: false };
 
   // Check if player is standing on a transition tile
   const tile = getTile(state.currentLevel, actor.position.x, actor.position.y);
@@ -374,10 +384,11 @@ export function handleTransition(state: GameState, actorId: EntityId = state.pla
     };
   }
 
-  // Find the edge from this position
+  // Find the edge from this position - use playerLocations to determine source level
+  const actorLevelId = state.world.playerLocations?.[actorId]?.levelId ?? state.world.currentLevelId;
   const forwardEdge = state.world.edges.find(
     (e) =>
-      e.fromLevelId === state.world.currentLevelId &&
+      e.fromLevelId === actorLevelId &&
       e.fromPosition.x === actor.position.x &&
       e.fromPosition.y === actor.position.y
   );
@@ -389,12 +400,18 @@ export function handleTransition(state: GameState, actorId: EntityId = state.pla
     };
   }
 
-  // Store current level state with compression timestamp
+  // Remove only the acting player from the source level (others stay)
+  const sourceLevelWithoutActor: LevelState = {
+    ...state.currentLevel,
+    entities: state.currentLevel.entities.filter((e) => e.id !== actorId),
+  };
+
+  // Store current level state with compression timestamp (keeping remaining players)
   const updatedLevels = {
     ...state.world.levels,
-    [state.world.currentLevelId]: {
-      ...state.world.levels[state.world.currentLevelId],
-      level: removePlayersFromLevel(state.currentLevel),
+    [actorLevelId]: {
+      ...state.world.levels[actorLevelId],
+      level: sourceLevelWithoutActor,
       compressedAt: state.turn,
       tileFlavors: state.tileFlavors,
       enemyFlavors: state.enemyFlavors,
@@ -487,10 +504,15 @@ export function handleTransition(state: GameState, actorId: EntityId = state.pla
 
   }
 
-  // Place party at entry point (spread to nearby walkable tiles) and update FOV.
+  // Place only the transitioning player at entry point and update FOV.
   destLevel = removePlayersFromLevel(destLevel);
-  const placed = placePartyAtEntry(destLevel, entryPos, party, actor.id);
-  destLevel = placed.level;
+  const spawnPos = findNearestSpawn(destLevel, entryPos, new Set()) ?? entryPos;
+  const placedActor: Player = { ...actor, position: spawnPos };
+  destLevel = {
+    ...destLevel,
+    entities: [...destLevel.entities, placedActor],
+  };
+  destLevel = updateFov(destLevel, spawnPos, PLAYER_FOV_RADIUS);
 
   const destStored = updatedLevels[forwardEdge.toLevelId];
   const destTileFlavors = destStored?.tileFlavors ?? {};
@@ -506,9 +528,10 @@ export function handleTransition(state: GameState, actorId: EntityId = state.pla
     roomDescription: destRoomDescription,
   };
 
-  const newState: GameState = {
+  let newState: GameState = {
     ...state,
     world: {
+      ...state.world,
       levels: updatedLevels,
       edges: newEdges,
       currentLevelId: forwardEdge.toLevelId,
@@ -519,9 +542,15 @@ export function handleTransition(state: GameState, actorId: EntityId = state.pla
     roomDescription: destRoomDescription,
     messages: [
       ...state.messages,
-      { turn: state.turn, ts: Date.now(), text: 'The party traverses to a new area...', kind: 'system' },
+      { turn: state.turn, ts: Date.now(), text: `${actor.name} traverses to a new area...`, kind: 'system' },
     ],
   };
+
+  // Update playerLocations only for the transitioning player
+  newState = updatePlayerLocation(newState, actorId, {
+    levelId: forwardEdge.toLevelId,
+    position: spawnPos,
+  });
 
   return {
     state: newState,
@@ -744,7 +773,17 @@ function applyActionWithoutAdvancingTurn(state: GameState, actorId: EntityId, ac
         updatedLevel = updateFov(updatedLevel, { x: targetX, y: targetY }, PLAYER_FOV_RADIUS);
       }
 
-      return { state: { ...state, currentLevel: updatedLevel } };
+      let resultState: GameState = { ...state, currentLevel: updatedLevel };
+
+      // Update playerLocations if a player moved
+      if (actor.kind === 'Player') {
+        resultState = updatePlayerLocation(resultState, actorId, {
+          levelId: resultState.world.currentLevelId,
+          position: { x: targetX, y: targetY },
+        });
+      }
+
+      return { state: resultState };
     }
 
     case 'Attack': {
@@ -761,29 +800,117 @@ function applyActionWithoutAdvancingTurn(state: GameState, actorId: EntityId, ac
   }
 }
 
+// Get the level ID for an actor from playerLocations
+function getActorLevelId(state: GameState, actorId: EntityId): LevelId {
+  return state.world.playerLocations?.[actorId]?.levelId ?? state.world.currentLevelId;
+}
+
+// Get all unique level IDs that have players on them
+function getActiveLevelIds(state: GameState): LevelId[] {
+  const playerLocations = state.world.playerLocations ?? {};
+  const levelIds = new Set<LevelId>();
+
+  for (const location of Object.values(playerLocations)) {
+    levelIds.add(location.levelId);
+  }
+
+  // Also include currentLevelId as a fallback for backwards compatibility
+  levelIds.add(state.world.currentLevelId);
+
+  return Array.from(levelIds);
+}
+
+// Temporarily set a level as the "current" level for processing
+function withLevelAsCurrent(state: GameState, levelId: LevelId): GameState {
+  // If already on this level, use currentLevel (which may be more up-to-date than world.levels)
+  if (levelId === state.world.currentLevelId) {
+    return state;
+  }
+  const storedLevel = state.world.levels[levelId];
+  if (!storedLevel) return state;
+  return {
+    ...state,
+    world: { ...state.world, currentLevelId: levelId },
+    currentLevel: storedLevel.level,
+    tileFlavors: storedLevel.tileFlavors ?? state.tileFlavors,
+    enemyFlavors: storedLevel.enemyFlavors ?? state.enemyFlavors,
+    roomDescription: storedLevel.roomDescription ?? state.roomDescription,
+  };
+}
+
+// Sync currentLevel back to world.levels
+function syncLevelToWorld(state: GameState): GameState {
+  const levelId = state.world.currentLevelId;
+  const storedLevel = state.world.levels[levelId];
+  if (!storedLevel) return state;
+  return {
+    ...state,
+    world: {
+      ...state.world,
+      levels: {
+        ...state.world.levels,
+        [levelId]: {
+          ...storedLevel,
+          level: state.currentLevel,
+          tileFlavors: state.tileFlavors,
+          enemyFlavors: state.enemyFlavors,
+          roomDescription: state.roomDescription,
+        },
+      },
+    },
+  };
+}
+
 export function applyTick(state: GameState, intents: ActorIntent[]): TickResult {
   const orderedIntents = [...intents].sort((a, b) => a.actorId.localeCompare(b.actorId));
   let currentState = state;
   let transition: TransitionResult | undefined = undefined;
 
+  // Group intents by level
+  const intentsByLevel = new Map<LevelId, ActorIntent[]>();
   for (const intent of orderedIntents) {
-    // Commands are out-of-band (server handles them), so skip here.
     if (intent.action.kind === 'Command') continue;
-
-    const beforeLevelId = currentState.world.currentLevelId;
-    const result = applyActionWithoutAdvancingTurn(currentState, intent.actorId, intent.action);
-    currentState = result.state;
-    if (result.transition) transition = result.transition;
-
-    // Party transition moves everyone; drop any remaining intents for this tick.
-    if (intent.action.kind === 'Transition' && currentState.world.currentLevelId !== beforeLevelId) {
-      break;
-    }
+    const levelId = getActorLevelId(currentState, intent.actorId);
+    const levelIntents = intentsByLevel.get(levelId) ?? [];
+    levelIntents.push(intent);
+    intentsByLevel.set(levelId, levelIntents);
   }
 
-  currentState = applyMonsterActions(currentState);
-  currentState = applyRegen(currentState);
-  currentState = respawnMonsters(currentState);
+  // Get all active levels (levels with players)
+  const activeLevelIds = getActiveLevelIds(currentState);
+
+  // Process each active level
+  for (const levelId of activeLevelIds) {
+    // Switch to this level
+    currentState = withLevelAsCurrent(currentState, levelId);
+
+    // Apply player intents for this level
+    const levelIntents = intentsByLevel.get(levelId) ?? [];
+    for (const intent of levelIntents) {
+      const beforeLevelId = currentState.world.currentLevelId;
+      const result = applyActionWithoutAdvancingTurn(currentState, intent.actorId, intent.action);
+      currentState = result.state;
+      if (result.transition) transition = result.transition;
+
+      // If a transition occurred, the state has changed levels for that player
+      // Sync the current level back before potentially switching
+      if (intent.action.kind === 'Transition' && currentState.world.currentLevelId !== beforeLevelId) {
+        // The transition already updated world.levels, no need to sync here
+      }
+    }
+
+    // Apply monster actions, regen, and respawn for this level
+    // Re-switch to this level in case a transition changed currentLevel
+    currentState = withLevelAsCurrent(currentState, levelId);
+    currentState = applyMonsterActions(currentState);
+    currentState = applyRegen(currentState);
+    currentState = respawnMonsters(currentState);
+
+    // Sync this level back to world.levels
+    currentState = syncLevelToWorld(currentState);
+  }
+
+  // Increment turn
   currentState = { ...currentState, turn: currentState.turn + 1 };
 
   return { state: currentState, transition };
